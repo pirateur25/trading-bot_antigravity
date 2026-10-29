@@ -1,0 +1,81 @@
+name: Optimisation OTE ZigZag + MSS (Optuna)
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Paires (EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD)"
+        default: "EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD"
+      n_trials:
+        description: "Nombre de trials Optuna"
+        default: "200"
+      split:
+        description: "Début période TEST"
+        default: "2024-01-01"
+      fee:
+        description: "Coût par ordre (%)"
+        default: "0.005"
+      min_trades:
+        description: "Trades minimum par paire par moitié"
+        default: "10"
+      wall_time:
+        description: "Durée max en minutes"
+        default: "320"
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: Compilation noyau C (utilisé par FVG mais pas OTE ; on compile quand même pour cohérence)
+        run: gcc -O3 -march=native -shared -fPIC -o backtest/_kernels.so backtest/kernels.c -lm || true
+
+      - name: Création du dossier résultats
+        run: mkdir -p results_opt
+
+      - name: Optimisation Optuna OTE
+        run: |
+          python backtest/optimize_ote.py \
+            --symbols "${{ inputs.symbols }}" \
+            --n_trials "${{ inputs.n_trials }}" \
+            --split "${{ inputs.split }}" \
+            --fee "${{ inputs.fee }}" \
+            --min_trades "${{ inputs.min_trades }}" \
+            --wall_time "${{ inputs.wall_time }}" \
+            --outdir results_opt 2>&1 | tee results_opt/log_ote.txt
+
+      - name: Envoi Telegram de la meilleure config OTE
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import os, json, requests
+          token, chat = os.environ.get("BOT_TOKEN"), os.environ.get("CHAT_ID")
+          if not token or not chat:
+              exit(0)
+          f = "results_opt/best_params_ote.json"
+          if os.path.exists(f):
+              p = json.load(open(f))
+              msg = "✅ Optuna OTE terminé\n" + "\n".join(f"  {k} = {v}" for k, v in p.items())
+              requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": chat, "text": msg[:4000]}, timeout=20)
+              with open(f, "rb") as ff:
+                  requests.post(f"https://api.telegram.org/bot{token}/sendDocument",
+                                data={"chat_id": chat}, files={"document": ff}, timeout=30)
+          EOF
+
+      - name: Sauvegarde
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimisation-ote
+          path: results_opt/

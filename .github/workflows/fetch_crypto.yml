@@ -1,0 +1,56 @@
+name: Téléchargement données crypto
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Cryptos FTMO (ex: BTCUSD,ETHUSD,XRPUSD)"
+        default: "BTCUSD,ETHUSD,XRPUSD,LTCUSD,ADAUSD,DOGEUSD"
+      start:
+        description: "Date de début"
+        default: "2021-01-01"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests pandas
+
+      - name: Téléchargement
+        env:
+          SYMBOLS: ${{ inputs.symbols }}
+          START: ${{ inputs.start }}
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, "backtest")
+          import data_crypto as dc
+          syms = os.environ["SYMBOLS"].split(",")
+          start = os.environ["START"]
+          os.makedirs("data", exist_ok=True)
+          for sym in syms:
+              sym = sym.strip().upper()
+              if not sym: continue
+              binance_sym = dc.ftmo_to_binance(sym)
+              print(f"Téléchargement {sym} ({binance_sym}) depuis {start}...")
+              try:
+                  df, src = dc.load(binance_sym, "5m", start, source="auto", use_cache=False)
+                  out = f"data/{sym}.csv.gz"
+                  df.to_csv(out, index=False, compression="gzip")
+                  print(f"  ✅ {sym}: {len(df)} bougies, source={src}, fichier={out}")
+              except Exception as e:
+                  print(f"  ❌ {sym}: {e}")
+          EOF
+
+      - name: Commit des données crypto
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/*.csv.gz || true
+          git diff --cached --quiet || git commit -m "chore: données crypto téléchargées $(date -u +%Y-%m-%d)"
+          git push || echo "Rien à pousser"
