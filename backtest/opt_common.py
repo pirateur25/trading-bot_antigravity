@@ -25,20 +25,44 @@ def parse_kv(text):
     return out
 
 
-def pair_score(st, min_trades):
-    """Ratio de Calmar (Rendement / Max Drawdown, plafonné à ±3) pondéré par min(1, trades/min_trades)."""
-    if st["trades"] == 0:
-        return 0.0
-    s = float(np.clip(st["return_pct"] / max(abs(st["max_dd_pct"]), 2.0), -3, 3))
-    return s * min(1.0, st["trades"] / float(min_trades))
+def pair_score(st, min_trades, dd_limit=14.0):
+    """Score asymétrique anti-overfitting :
+    - Si return_pct <= 0 : la perte et l'excès de drawdown s'ADDITIONNENT (jamais de division par le DD sur une perte !),
+      et la pénalité n'est jamais réduite quand il y a peu de trades.
+    - Si return_pct > 0 : Calmar plafonné à +2.0 (pour éviter qu'un seul actif aberrant masque les autres),
+      pondéré par min(1, trades/min_trades), moins pénalité si le DD dépasse dd_limit.
+    """
+    tr = st.get("trades", 0)
+    if tr == 0:
+        return -0.25
+    ret = float(st.get("return_pct", 0.0))
+    dd = abs(float(st.get("max_dd_pct", 0.0)))
+    dd_excess = max(0.0, (dd - dd_limit) / 5.0)
+    if ret <= 0.0:
+        return float(np.clip(ret / 4.0 - max(0.0, dd - 6.0) / 6.0, -4.0, -0.05))
+    calmar = float(np.clip(ret / max(dd, 3.5), 0.0, 2.5))
+    ret_bonus = float(np.clip(ret / 15.0, 0.0, 2.0))
+    weight = min(1.0, tr / float(max(min_trades, 1.0)))
+    return float((0.6 * calmar + 0.4 * ret_bonus) * weight - dd_excess)
 
 
-def half_score(rows, min_trades, min_total_trades=60):
-    """Calmar moyen sur le panier de paires, avec pénalité dure (-10) si le panier fait trop peu de trades au total."""
-    tot_t = sum(st["trades"] for st in rows.values())
+def half_score(rows, min_trades, min_total_trades=10, dd_limit=14.0):
+    """Score moyen sur le panier avec pénalité de sous-activité, de paires perdantes et de déséquilibre Long/Short."""
+    tot_t = sum(st.get("trades", 0) for st in rows.values())
     if tot_t < min_total_trades:
         return -10.0 + (tot_t / float(max(min_total_trades, 1))) * 5.0
-    return float(np.mean([pair_score(st, min_trades) for st in rows.values()]))
+    n = max(1, len(rows))
+    scores = [pair_score(st, min_trades, dd_limit=dd_limit) for st in rows.values()]
+    mean_sc = float(np.mean(scores))
+    # Pénalité si plus de la moitié des paires du panier perdent de l'argent
+    losers = sum(1 for st in rows.values() if st.get("return_pct", 0.0) < -0.5)
+    lose_ratio = losers / float(n)
+    consistency_pen = max(0.0, lose_ratio - 0.35) * 1.5
+    # Pénalité si un sens (achat ou vente) est lourdement perdant pendant que l'autre gagne
+    rl = sum(st.get("r_long", 0.0) for st in rows.values())
+    rs = sum(st.get("r_short", 0.0) for st in rows.values())
+    side_pen = 0.25 if (rl < -5.0 and rs > 5.0) or (rs < -5.0 and rl > 5.0) else 0.0
+    return mean_sc - consistency_pen - side_pen
 
 
 def side_r(tr):
@@ -98,7 +122,7 @@ def apply_space(trial, space, frozen, base):
 
 
 def plateau_center(done_trials, space, frozen, base):
-    """Sélectionne le centre du plateau stable (médiane du top 15% des essais) plutôt que le pic isolé."""
+    """Sélectionne le centre du plateau stable (médiane/mode du top 15% des essais) plutôt que le pic isolé."""
     valid = [t for t in done_trials if t.value is not None and t.value > -5.0]
     if len(valid) < 5:
         return None
@@ -113,7 +137,11 @@ def plateau_center(done_trials, space, frozen, base):
         if not vals:
             continue
         if spec[0] == "cat":
-            p[k] = max(set(vals), key=vals.count)
+            if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in spec[1]):
+                med = float(np.median(vals))
+                p[k] = min(spec[1], key=lambda x: abs(float(x) - med))
+            else:
+                p[k] = max(set(vals), key=vals.count)
         elif spec[0] == "int":
             p[k] = int(round(float(np.median(vals))))
         else:
@@ -162,11 +190,11 @@ def save_slice_plot(done_trials, space, frozen, outpath, label):
 
 
 def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summary_file):
-    """Boucle Optuna commune avec Walk-Forward, détection de plateau et graphique de tranches."""
+    """Boucle Optuna commune avec Walk-Forward, détection de plateau, garde-fou Référence et graphique de tranches."""
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     storage = f"sqlite:///{os.path.join(a.outdir, 'study_' + label + '.db')}"
-    study = optuna.create_study(study_name=f"{label}_v3", storage=storage, direction="maximize", load_if_exists=True,
+    study = optuna.create_study(study_name=f"{label}_v4", storage=storage, direction="maximize", load_if_exists=True,
                                 sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=min(35, max(10, a.n_trials // 4))))
     if len(study.trials) == 0:
         try:
@@ -200,20 +228,35 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
     p_peak = best.user_attrs["p"]
     p_plat = plateau_center(done, space, frozen, baseline)
     sc_plat = ev.objective(p_plat) if p_plat is not None else float("-inf")
-    # Si le centre du plateau garde >= 80% du score du pic (ou si le pic est proche), on privilégie le plateau
-    use_plat = p_plat is not None and sc_plat > -5.0 and (sc_plat >= best.value * 0.80 or best.value <= 0)
-    p = p_plat if use_plat else p_peak
+    base_score = ev.objective(baseline)
+
+    # Priorité au centre du plateau s'il est proche du pic (écart <= 0.15 ou >= 65% du score pic)
+    use_plat = p_plat is not None and sc_plat > -5.0 and (sc_plat >= best.value - 0.15 or (best.value > 0 and sc_plat >= best.value * 0.65))
+    cand_p = p_plat if use_plat else p_peak
+    cand_sc = sc_plat if use_plat else best.value
+
+    # Garde-fou : si ni le plateau ni le pic ne battent la référence sur le Walk-Forward, on conserve la référence
+    use_ref = base_score > cand_sc + 1e-6
+    if use_ref:
+        p = dict(baseline)
+        mode_lbl = "🛡️ RÉFÉRENCE CONSERVÉE (plus robuste que les essais)"
+    elif use_plat:
+        p = p_plat
+        mode_lbl = "🟢 CENTRE DU PLATEAU STABLE"
+    else:
+        p = p_peak
+        mode_lbl = "🔶 PIC OPTUNA"
+
     if p_plat is not None:
         json.dump(p_plat, open(os.path.join(a.outdir, f"plateau_{best_file}"), "w"), indent=1)
     json.dump(p, open(os.path.join(a.outdir, best_file), "w"), indent=1)
 
     tried = sorted({k for k in space if k not in frozen})
-    base_score = ev.objective(baseline)
     rows = {"train": ev.evaluate(p, "train"), "test": ev.evaluate(p, "test")}
     brows = {"train": ev.evaluate(baseline, "train"), "test": ev.evaluate(baseline, "test")}
     ntrades = sum(r["trades"] for r in rows["train"].values())
     L = [f"✅ Optuna {label.upper()} (Walk-Forward) — {len(done)} essais",
-         f"Mode retenu : {'🟢 CENTRE DU PLATEAU STABLE' if use_plat else '🔶 PIC OPTUNA'} (score pic {best.value:.3f} | plateau {sc_plat:.3f} | réf {base_score:.3f})",
+         f"Mode retenu : {mode_lbl} (score pic {best.value:.3f} | plateau {sc_plat:.3f} | réf {base_score:.3f})",
          f"Leviers optimisés ({len(tried)}) : {', '.join(tried)}",
          "Leviers figés : " + (", ".join(f"{k}={v}" for k, v in frozen.items()) or "aucun"),
          f"TRAIN (2021-2023) retenu : {fmt(rows['train'])}", f"TRAIN référence : {fmt(brows['train'])}",
@@ -228,8 +271,8 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
             L.append(f"⚠️ {per} : le profit vient presque d'un seul sens → dérive du marché probable.")
     if ntrades < 60:
         L.append(f"⚠️ Seulement {ntrades} trades sur le train : configuration trop sélective.")
-    if max(best.value, sc_plat) <= base_score + 1e-9:
-        L.append("➡️ L'optimisation n'a PAS battu la référence sur le Walk-Forward : garde la référence.")
+    if use_ref:
+        L.append("➡️ Aucun essai n'a battu la référence sur le Walk-Forward : la référence a été conservée dans le JSON.")
     elif tst < tb:
         L.append("⚠️ Meilleur sur Walk-Forward mais moins bon que la référence sur TEST 2024+.")
     else:

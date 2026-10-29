@@ -106,13 +106,20 @@ def make_frame(df, minutes, base_min):
 
 def add_indicators(f, p, tf):
     o, h, l, c = f["o"], f["h"], f["l"], f["c"]
-    pc = np.concatenate([[np.nan], c[:-1]])
-    tr = np.fmax(h - l, np.fmax(np.abs(h - pc), np.abs(l - pc)))
-    f["atr"] = pd.Series(tr).rolling(p["atr_len"]).mean().to_numpy()
-    s = pd.Series(c)
-    mid = s.rolling(p["bb_len"]).mean()
-    sd = s.rolling(p["bb_len"]).std(ddof=0).to_numpy()  # écart-type de population, comme TradingView
-    up, dn = (mid + p["bb_mult"] * sd).to_numpy(), (mid - p["bb_mult"] * sd).to_numpy()
+    atr_key = ("atr", int(p["atr_len"]))
+    if atr_key not in f:
+        pc = np.concatenate([[np.nan], c[:-1]])
+        tr = np.fmax(h - l, np.fmax(np.abs(h - pc), np.abs(l - pc)))
+        f[atr_key] = pd.Series(tr).rolling(int(p["atr_len"])).mean().to_numpy()
+    f["atr"] = f[atr_key]
+    bb_key = ("bb", int(p["bb_len"]), float(p["bb_mult"]))
+    if bb_key not in f:
+        s = pd.Series(c)
+        mid = s.rolling(int(p["bb_len"])).mean()
+        sd = s.rolling(int(p["bb_len"])).std(ddof=0).to_numpy()  # écart-type de population, comme TradingView
+        up, dn = (mid + p["bb_mult"] * sd).to_numpy(), (mid - p["bb_mult"] * sd).to_numpy()
+        f[bb_key] = (up, dn, sd)
+    up, dn, sd = f[bb_key]
     f["bb_up"], f["bb_dn"] = up, dn
     body_lo, body_hi = np.minimum(o, c), np.maximum(o, c)
     thr = p.get(f"bubble_min_pct_{tf}", 0.0)
@@ -191,14 +198,15 @@ def trend_bear(T, th, tl, tc, p):
             bear_dow = have & (zz["cur_hi"] < zz["prev_hi"]) & (zz["cur_lo"] < zz["prev_lo"]) & (tc <= zz["cur_hi"])
     if mode in ("ma", "both", "ema"):
         ema = pd.Series(tc).ewm(span=p["ma_len"], adjust=False).mean().to_numpy()
+        warmup = min(10, max(2, int(p["ma_len"]) // 10))
         if mode == "ema":
             with np.errstate(invalid="ignore"):
-                bear_ma = ( np.arange(n) >= p["ma_len"] ) & (tc < ema)
+                bear_ma = (np.arange(n) >= warmup) & (tc < ema)
             return bear_ma
         k = p["ma_slope_bars"]
         slope = ema - np.concatenate([np.full(k, np.nan), ema[:-k]])
         with np.errstate(invalid="ignore"):
-            bear_ma = (tc < ema) & (slope < 0)
+            bear_ma = (np.arange(n) >= warmup) & (tc < ema) & (slope < 0)
     if mode == "dow":
         return bear_dow
     if mode == "ma":
@@ -411,11 +419,14 @@ def _range_sm(bh, bl, bL, end, H0, Hb0, zlo, lvl):
 DIAG = {}   # entonnoir : combien de candidats sont éliminés par chaque filtre, par type de confirmation
 
 
+_DF_CACHE = {}
+
+
 def _d(kind, reason):
     DIAG[(kind, reason)] = DIAG.get((kind, reason), 0) + 1
 
 
-def run_world(F, B, jm, p, sign):
+def run_world(F, B, jm, p, sign, cache=None):
     """sign=+1 : on cherche des SHORTS (tendance baissière). sign=-1 : monde en miroir -> des LONGS.
     Renvoie une liste de (indice_base, sl, tp, code) avec des prix déjà remis à l'échelle réelle."""
     def view(f):
@@ -423,6 +434,9 @@ def run_world(F, B, jm, p, sign):
             return f["o"], f["h"], f["l"], f["c"]
         return -f["o"], -f["l"], -f["h"], -f["c"]
 
+    if cache is None:
+        cache = {}
+    quiet = bool(p.get("_quiet", False))
     confirms = _csv(p["confirms"])
     nb = len(B["c"])
     tT = p["trend_tf"]
@@ -430,14 +444,26 @@ def run_world(F, B, jm, p, sign):
         return [], 0.0
     T = F[tT]
     _, th, tl, tc = view(T)
-    bear = trend_bear(T, th, tl, tc, p)
-    zzT = zigzag(th, tl, T["atr"], p["zz_atr_trend"])                 # pivots utilisés par la loi de Dow (pour les fiches)
-    emaT = pd.Series(tc).ewm(span=p["ma_len"], adjust=False).mean().to_numpy()
+    tb_key = ("tb", tT, sign, p["trend_mode"], int(p["atr_len"]), float(p["zz_atr_trend"]), int(p["ma_len"]), int(p["ma_slope_bars"]))
+    if tb_key not in cache:
+        cache[tb_key] = trend_bear(T, th, tl, tc, p)
+    bear = cache[tb_key]
+    if not quiet:
+        zz_key = ("zz", tT, sign, int(p["atr_len"]), float(p["zz_atr_trend"]))
+        if zz_key not in cache:
+            cache[zz_key] = zigzag(th, tl, T["atr"], p["zz_atr_trend"])
+        zzT = cache[zz_key]
+        emaT = pd.Series(tc).ewm(span=p["ma_len"], adjust=False).mean().to_numpy()
+    else:
+        zzT = emaT = None
     ranges = {}
     for R in _csv(p["range_tfs"]):
         if R in F:
             _, rh, rl, _ = view(F[R])
-            ranges[R] = bear_range(F[R], rh, rl, p, R)
+            rg_key = ("rg", R, sign, int(p["atr_len"]), float(p.get("zz_atr_" + R, 2.0)), p.get("range_origin", "leg"), int(p.get("leg_lookback", 300)))
+            if rg_key not in cache:
+                cache[rg_key] = bear_range(F[R], rh, rl, p, R)
+            ranges[R] = cache[rg_key]
     _, bh, bl, _ = view(B)
     s0, s1 = int(p.get("session_start", 0)), int(p.get("session_end", 24))
     b_hours = (B["close_ns"] // (60 * NS_MIN)) % 24 if (s0, s1) != (0, 24) else None
@@ -447,44 +473,57 @@ def run_world(F, B, jm, p, sign):
             continue
         V = F[Y]
         vo, vh, vl, vc = view(V)
-        iY = np.searchsorted(B["close_ns"], V["close_ns"])
-        okY = np.zeros(len(vo), bool)
-        inside = iY < nb
-        okY[inside] = B["close_ns"][iY[inside]] == V["close_ns"][inside]
+        iy_key = ("iY", Y)
+        if iy_key not in cache:
+            iY = np.searchsorted(B["close_ns"], V["close_ns"])
+            okY = np.zeros(len(vo), bool)
+            inside = iY < nb
+            okY[inside] = B["close_ns"][iY[inside]] == V["close_ns"][inside]
+            cache[iy_key] = (iY, okY)
+        iY, okY = cache[iy_key]
         cands = []
         if "bubble" in confirms and len(vo) > 1:
             bub = V["bub_up"] if sign == 1 else V["bub_dn"]
             idx = np.where(bub[:-1] & (vc[1:] < vo[1:]))[0] + 1  # bulle puis bougie baissière
             cands += [(int(j), "bubble", None, None) for j in idx if okY[j]]
         if "mss" in confirms:
-            ev, h2, h1m, l2m = mss_events(vh, vl, vc, p["mss_fractal"], p["mss_speed_ratio"], vo,
-                                       p["mss_trough_pivot"], p["mss_min_sweep_pct"])
+            mss_key = ("mss", Y, sign, int(p["mss_fractal"]), float(p["mss_speed_ratio"]), int(p["mss_trough_pivot"]), float(p["mss_min_sweep_pct"]))
+            if mss_key not in cache:
+                cache[mss_key] = mss_events(vh, vl, vc, p["mss_fractal"], p["mss_speed_ratio"], vo,
+                                            p["mss_trough_pivot"], p["mss_min_sweep_pct"])
+            ev, h2, h1m, l2m = cache[mss_key]
             cands += [(int(j), "mss", h2[j], (h1m[j], h2[j], l2m[j])) for j in np.where(ev)[0] if okY[j]]
-            _d("mss_brut", "0 événements MSS " + Y)
+            if not quiet:
+                _d("mss_brut", "0 événements MSS " + Y)
         cands.sort(key=lambda x: x[0])
         for j, kind, sweep, mssp in cands:
             i = int(iY[j])
             jt = jm[tT][i]
-            _d(kind, "0 détectés")
+            if not quiet:
+                _d(kind, "0 détectés")
             if jt < 0 or (p["trend_filter"] and not bear[jt]):
-                _d(kind, "1 hors tendance")
+                if not quiet:
+                    _d(kind, "1 hors tendance")
                 continue
             if b_hours is not None:
                 hr = int(b_hours[i])
                 if not ((s0 <= hr < s1) if s0 < s1 else (hr >= s0 or hr < s1)):
-                    _d(kind, "1 hors session")
+                    if not quiet:
+                        _d(kind, "1 hors session")
                     continue
             for R, rg in ranges.items():
                 jr = jm[R][i]
                 if jr < 0 or not rg["valid"][jr]:
-                    _d(kind, "2 pas de range valide")
+                    if not quiet:
+                        _d(kind, "2 pas de range valide")
                     continue
                 H, L = rg["H"][jr], rg["L"][jr]
                 Rf, li = F[R], int(rg["Li"][jr])
                 bs = int(np.searchsorted(B["open_ns"], Rf["open_ns"][li], side="left"))
                 be = int(np.searchsorted(B["open_ns"], Rf["close_ns"][li], side="left"))
                 if be <= bs:
-                    _d(kind, "4 données manquantes")
+                    if not quiet:
+                        _d(kind, "4 données manquantes")
                     continue
                 bL = bs + int(np.argmin(bl[bs:be]))
                 hs = int(np.searchsorted(B["open_ns"], Rf["open_ns"][int(rg["Hi"][jr])], side="left"))
@@ -502,27 +541,33 @@ def run_world(F, B, jm, p, sign):
                     cut = int(np.searchsorted(B["open_ns"], V["open_ns"][max(cj, 0)], side="left"))
                     H, hi_b, L, bL2, dead, nrec = _range_sm(bh, bl, bL, cut, float(H), hi_b, p["ote_lo"], p["ote_react_level"])
                     if dead:
-                        _d(kind, "3 OTE déjà réagie (retracement invalide)")
+                        if not quiet:
+                            _d(kind, "3 OTE déjà réagie (retracement invalide)")
                         continue
                     if bL2 < 0:
-                        _d(kind, "6 sommet du range repris")
+                        if not quiet:
+                            _d(kind, "6 sommet du range repris")
                         continue
                     bL = bL2
                 zl, zh = L + p["ote_lo"] * (H - L), L + p["ote_hi"] * (H - L)
                 if kind == "bubble":
                     if not (max(vh[j - 1], vh[j]) >= zl and min(vl[j - 1], vl[j]) <= zh):
-                        _d(kind, "3 hors zone OTE")
+                        if not quiet:
+                            _d(kind, "3 hors zone OTE")
                         continue
                 elif not (zl <= sweep <= H):
-                    _d(kind, "3 hors zone OTE")
+                    if not quiet:
+                        _d(kind, "3 hors zone OTE")
                     continue
                 after_l, after_h = bl[bL + 1:i + 1], bh[bL + 1:i + 1]
                 if len(after_h) == 0 or after_l.min() < bl[bL]:  # nouveau plus bas : la jambe a changé
-                    _d(kind, "5 nouveau extrême depuis le creux du range")
+                    if not quiet:
+                        _d(kind, "5 nouveau extrême depuis le creux du range")
                     continue
                 peak = after_h.max()
                 if peak >= H:
-                    _d(kind, "6 sommet du range repris")
+                    if not quiet:
+                        _d(kind, "6 sommet du range repris")
                     continue
                 atr = V["atr"][j]
                 if atr != atr:
@@ -531,55 +576,58 @@ def run_world(F, B, jm, p, sign):
                 tp = peak - p["tp_fib"] * (peak - bl[bL])
                 entry = vc[j]
                 if not (tp < entry < sl):
-                    _d(kind, "7 entrée déjà sous le TP")
+                    if not quiet:
+                        _d(kind, "7 entrée déjà sous le TP")
                     continue
                 if p["min_sl_pct"] and (sl - entry) / abs(entry) * 100 < p["min_sl_pct"]:
-                    _d(kind, "8 stop plus serré que min_sl_pct")
+                    if not quiet:
+                        _d(kind, "8 stop plus serré que min_sl_pct")
                     continue
                 if p["min_rr"] and (entry - tp) < p["min_rr"] * (sl - entry):
-                    _d(kind, "8 ratio gain/risque trop faible")
+                    if not quiet:
+                        _d(kind, "8 ratio gain/risque trop faible")
                     continue
-                _d(kind, "9 SIGNAL")
-                # ---- infos détaillées du trade (prix réels, pas en miroir)
-                def bidx(ci, arr, fn):
-                    a0 = int(np.searchsorted(B["open_ns"], Rf["open_ns"][ci], side="left"))
-                    a1 = int(np.searchsorted(B["open_ns"], Rf["close_ns"][ci], side="left"))
-                    return a0 + int(fn(arr[a0:a1])) if a1 > a0 else -1
-                def ts(ix):
-                    return pd.Timestamp(int(B["open_ns"][ix]), tz="UTC").strftime("%Y-%m-%d %H:%M") if ix >= 0 else ""
-                k_pk = bL + 1 + int(np.argmax(after_h))
-                pts = sorted([(sign * H, ts(hi_b)), (sign * L, ts(bL))], key=lambda x: x[0])
-                leg = sorted([(sign * peak, ts(k_pk)), (sign * bl[bL], ts(bL))], key=lambda x: x[0])
-                z = sorted([sign * zl, sign * zh])
-                info = {"signal_time": pd.Timestamp(int(B["close_ns"][i]), tz="UTC").strftime("%Y-%m-%d %H:%M"),
-                        "confirm": f"{kind}{Y}", "range_tf": R, "trend_tf": tT,
-                        "fib_range_high": pts[1][0], "fib_range_high_time": pts[1][1],
-                        "fib_range_low": pts[0][0], "fib_range_low_time": pts[0][1],
-                        "ote_zone_low": z[0], "ote_zone_high": z[1],
-                        "fib_leg_high": leg[1][0], "fib_leg_high_time": leg[1][1],
-                        "fib_leg_low": leg[0][0], "fib_leg_low_time": leg[0][1], "tp_fib": p["tp_fib"],
-                        "range_recycled": nrec}
-                jt_ = int(jt)
-                if sign == 1:
-                    ph_, ch_, pl_, cl_ = (zzT[k][jt_] for k in ("prev_hi", "cur_hi", "prev_lo", "cur_lo"))
-                else:   # monde en miroir : les sommets du monde sont les creux réels
-                    ph_, ch_, pl_, cl_ = (-zzT[k][jt_] for k in ("prev_lo", "cur_lo", "prev_hi", "cur_hi"))
-                tdir = ("BAISSIERE" if sign == 1 else "HAUSSIERE") if bear[jt_] else "AUCUNE (filtre désactivé)"
-                info.update({"trend_dir": tdir, "trend_mode": p["trend_mode"],
-                             "trend_prev_high": ph_, "trend_last_high": ch_, "trend_prev_low": pl_, "trend_last_low": cl_,
-                             "trend_ema": sign * emaT[jt_], "trend_close": sign * tc[jt_]})
-                if kind == "bubble":   # chiffres de la bulle, pour les comparer au graphique
-                    jb = j - 1
+                if not quiet:
+                    _d(kind, "9 SIGNAL")
+                if quiet:
+                    info = {}
+                else:
+                    # ---- infos détaillées du trade (prix réels, pas en miroir)
+                    def ts(ix):
+                        return pd.Timestamp(int(B["open_ns"][ix]), tz="UTC").strftime("%Y-%m-%d %H:%M") if ix >= 0 else ""
+                    k_pk = bL + 1 + int(np.argmax(after_h))
+                    pts = sorted([(sign * H, ts(hi_b)), (sign * L, ts(bL))], key=lambda x: x[0])
+                    leg = sorted([(sign * peak, ts(k_pk)), (sign * bl[bL], ts(bL))], key=lambda x: x[0])
+                    z = sorted([sign * zl, sign * zh])
+                    info = {"signal_time": pd.Timestamp(int(B["close_ns"][i]), tz="UTC").strftime("%Y-%m-%d %H:%M"),
+                            "confirm": f"{kind}{Y}", "range_tf": R, "trend_tf": tT,
+                            "fib_range_high": pts[1][0], "fib_range_high_time": pts[1][1],
+                            "fib_range_low": pts[0][0], "fib_range_low_time": pts[0][1],
+                            "ote_zone_low": z[0], "ote_zone_high": z[1],
+                            "fib_leg_high": leg[1][0], "fib_leg_high_time": leg[1][1],
+                            "fib_leg_low": leg[0][0], "fib_leg_low_time": leg[0][1], "tp_fib": p["tp_fib"],
+                            "range_recycled": nrec}
+                    jt_ = int(jt)
                     if sign == 1:
-                        edge, band = min(V["o"][jb], V["c"][jb]), V["bb_up"][jb]
-                    else:
-                        edge, band = max(V["o"][jb], V["c"][jb]), V["bb_dn"][jb]
-                    info.update({"bubble_time": pd.Timestamp(int(V["open_ns"][jb]), tz="UTC").strftime("%Y-%m-%d %H:%M"),
-                                 "bubble_kind": "HAUTE" if sign == 1 else "BASSE", "bubble_body_edge": edge, "bubble_band": band,
-                                 "bubble_dist_pct": abs(edge - band) / edge * 100})
-                if mssp is not None:
-                    info.update({"mss_first_extreme": sign * mssp[0], "mss_second_extreme": sign * mssp[1],
-                                 "mss_origin_level": sign * mssp[2]})
+                        ph_, ch_, pl_, cl_ = (zzT[k][jt_] for k in ("prev_hi", "cur_hi", "prev_lo", "cur_lo"))
+                    else:   # monde en miroir : les sommets du monde sont les creux réels
+                        ph_, ch_, pl_, cl_ = (-zzT[k][jt_] for k in ("prev_lo", "cur_lo", "prev_hi", "cur_hi"))
+                    tdir = ("BAISSIERE" if sign == 1 else "HAUSSIERE") if bear[jt_] else "AUCUNE (filtre désactivé)"
+                    info.update({"trend_dir": tdir, "trend_mode": p["trend_mode"],
+                                 "trend_prev_high": ph_, "trend_last_high": ch_, "trend_prev_low": pl_, "trend_last_low": cl_,
+                                 "trend_ema": sign * emaT[jt_], "trend_close": sign * tc[jt_]})
+                    if kind == "bubble":   # chiffres de la bulle, pour les comparer au graphique
+                        jb = j - 1
+                        if sign == 1:
+                            edge, band = min(V["o"][jb], V["c"][jb]), V["bb_up"][jb]
+                        else:
+                            edge, band = max(V["o"][jb], V["c"][jb]), V["bb_dn"][jb]
+                        info.update({"bubble_time": pd.Timestamp(int(V["open_ns"][jb]), tz="UTC").strftime("%Y-%m-%d %H:%M"),
+                                     "bubble_kind": "HAUTE" if sign == 1 else "BASSE", "bubble_body_edge": edge, "bubble_band": band,
+                                     "bubble_dist_pct": abs(edge - band) / edge * 100})
+                    if mssp is not None:
+                        info.update({"mss_first_extreme": sign * mssp[0], "mss_second_extreme": sign * mssp[1],
+                                     "mss_origin_level": sign * mssp[2]})
                 out.append((i, sign * sl, sign * tp, f"{kind}{Y}|{R}", info))
                 break
     return out, float(bear.mean())
@@ -587,35 +635,48 @@ def run_world(F, B, jm, p, sign):
 
 def prepare(df):
     p = PARAMS
+    quiet = bool(p.get("_quiet", False))
     open_ns = pd.DatetimeIndex(df["time"]).as_unit("ns").asi8
     base_min = int(round(np.median(np.diff(open_ns)) / NS_MIN))
-    B = {"o": df["open"].to_numpy(float), "h": df["high"].to_numpy(float), "l": df["low"].to_numpy(float),
-         "c": df["close"].to_numpy(float), "open_ns": open_ns, "close_ns": open_ns + base_min * NS_MIN}
     nb = len(df)
+    df_key = (nb, int(open_ns[0]), int(open_ns[-1]), base_min)
+    if df_key not in _DF_CACHE:
+        if len(_DF_CACHE) >= 16:
+            _DF_CACHE.clear()
+        B = {"o": df["open"].to_numpy(float), "h": df["high"].to_numpy(float), "l": df["low"].to_numpy(float),
+             "c": df["close"].to_numpy(float), "open_ns": open_ns, "close_ns": open_ns + base_min * NS_MIN}
+        _DF_CACHE[df_key] = {"B": B, "frames": {}, "jm": {}, "cache": {}}
+    entry = _DF_CACHE[df_key]
+    B = entry["B"]
     dropped = [tf for tf in _csv(p["conf_tfs"]) if TF_MIN[tf] < base_min]
-    if dropped:
+    if dropped and not quiet:
         print(f"Unité de base {base_min} min : confirmations {', '.join(dropped)} ignorées (trop fines).")
     need = {p["trend_tf"], *_csv(p["range_tfs"]), *_csv(p["conf_tfs"])}
     F = {}
     for tf in need:
         if TF_MIN[tf] >= base_min:
-            F[tf] = make_frame(df, TF_MIN[tf], base_min)
+            if tf not in entry["frames"]:
+                entry["frames"][tf] = make_frame(df, TF_MIN[tf], base_min)
+                entry["jm"][tf] = np.searchsorted(entry["frames"][tf]["close_ns"], B["close_ns"], side="right") - 1
+            F[tf] = entry["frames"][tf]
             add_indicators(F[tf], p, tf)
-    jm = {tf: np.searchsorted(f["close_ns"], B["close_ns"], side="right") - 1 for tf, f in F.items()}
+    jm = entry["jm"]
 
     setups = []
     for sign, side, name in ((1, -1, "short"), (-1, 1, "long")):
         if p["side"] not in ("both", name):
             continue
-        res, share = run_world(F, B, jm, p, sign)
+        res, share = run_world(F, B, jm, p, sign, cache=entry["cache"])
         setups += [(i, side, sl, tp, code, info) for i, sl, tp, code, info in res]
-        label = "baissière" if sign == 1 else "haussière"
-        print(f"Tendance {p['trend_tf']} {label} ({p['trend_mode']}) : {share * 100:.1f} % du temps | signaux {name} : {len(res)}")
+        if not quiet:
+            label = "baissière" if sign == 1 else "haussière"
+            print(f"Tendance {p['trend_tf']} {label} ({p['trend_mode']}) : {share * 100:.1f} % du temps | signaux {name} : {len(res)}")
 
-    for kind in ("bubble", "mss"):
-        rows = sorted((r, n) for (k, r), n in DIAG.items() if k == kind)
-        if rows:
-            print(f"Entonnoir {kind} (les 2 sens) : " + " | ".join(f"{r[2:]} {n}" if r[0] != "0" else f"détectés {n}" for r, n in rows))
+    if not quiet:
+        for kind in ("bubble", "mss"):
+            rows = sorted((r, n) for (k, r), n in DIAG.items() if k == kind)
+            if rows:
+                print(f"Entonnoir {kind} (les 2 sens) : " + " | ".join(f"{r[2:]} {n}" if r[0] != "0" else f"détectés {n}" for r, n in rows))
     sig_side = np.zeros(nb, dtype=np.int8)
     sig_sl = np.full(nb, np.nan)
     sig_tp = np.full(nb, np.nan)

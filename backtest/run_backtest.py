@@ -121,11 +121,12 @@ class _OTE:
 
 def run_ote(P, sym, i0, i1, risk, fee, lev, p):
     b = P.base
-    df = pd.DataFrame({"time": pd.to_datetime(b["open_ns"][i0:i1], utc=True), "open": b["o"][i0:i1], "high": b["h"][i0:i1],
-                       "low": b["l"][i0:i1], "close": b["c"][i0:i1]})
+    df_full = pd.DataFrame({"time": pd.to_datetime(b["open_ns"][:i1], utc=True), "open": b["o"][:i1], "high": b["h"][:i1],
+                            "low": b["l"][:i1], "close": b["c"][:i1]})
+    df_prep = _OTE(p).prepare(df_full).iloc[i0:i1]
     be = p.get("be_rr", 1000.0)
-    tr, eq, _ = engine_ote.run_backtest(df, _OTE(p), capital=CAPITAL, risk_pct=risk, fee_pct=fee, slippage_pct=0.0,
-                                        max_leverage=lev, allow_short=True, be_rr=be)
+    tr, eq, _ = engine_ote.run_backtest(df_prep, _OTE(p), capital=CAPITAL, risk_pct=risk, fee_pct=fee, slippage_pct=0.0,
+                                        max_leverage=lev, allow_short=True, be_rr=be, pre_prepared=True)
     return tr, eq.ffill().to_numpy()
 
 
@@ -157,12 +158,14 @@ def main():
     ap.add_argument("--use_best_fvg", default="oui")
     ap.add_argument("--params_ote", default="")
     ap.add_argument("--params_fvg", default="")
+    ap.add_argument("--fvg_skip", default="USDCHF,BTCUSD,ETHUSD,XRPUSD", help="Actifs ignorés par FVG en mode both (vide = aucun)")
     ap.add_argument("--outdir", default="results")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
 
     forex = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     crypto = [s.strip().upper() for s in a.crypto.split(",") if s.strip()]
+    fvg_skip = {s.strip().upper() for s in a.fvg_skip.split(",") if s.strip()} if a.mode == "both" else set()
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     p_ote = load_params(strategy_ote, os.path.join(here, "results", "best_params_ote.json") if a.use_best_ote == "oui" else "", a.params_ote)
     p_fvg = load_params(strategy_fvg, os.path.join(here, "results", "best_params_fvg.json") if a.use_best_fvg == "oui" else "", a.params_fvg)
@@ -173,10 +176,11 @@ def main():
     allt = {"FVG": [], "OTE": []}
     viewer_trades = []
     recap = []
+    dl_start = min(a.start, "2021-01-01") if a.start else "2021-01-01"
     for sym in forex + crypto:
         try:
             if sym in crypto:
-                ensure_data(sym, a.datadir, "2021-01-01")
+                ensure_data(sym, a.datadir, dl_start)
             P = data_fx.PairData(sym, a.datadir)
         except Exception as e:
             tg(f"❌ {sym} données : {e}")
@@ -186,6 +190,8 @@ def main():
         fee = realism.fee_for(sym)
         lev = a.leverage or realism.levier_for(sym)
         for name, risk, fn, p in todo:
+            if name == "FVG" and (sym in fvg_skip or sym in crypto and "CRYPTO" in fvg_skip):
+                continue
             try:
                 tr, eq = fn(P, sym, i0, i1, risk, fee, lev, p)
                 st = stats_of(tr, eq)

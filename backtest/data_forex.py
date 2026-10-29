@@ -66,7 +66,8 @@ class PairData:
         if key not in self.cache:
             f = self.frames[tf]
             ema = pd.Series(f["c"]).ewm(span=length, adjust=False).mean().to_numpy()
-            st = np.where(np.arange(len(ema)) < length, 0, np.sign(f["c"] - ema)).astype(np.int8)
+            warmup = min(10, max(2, length // 10))
+            st = np.where(np.arange(len(ema)) < warmup, 0, np.sign(f["c"] - ema)).astype(np.int8)
             j = np.searchsorted(f["close_ns"], self.base["close_ns"], side="right") - 1
             self.cache[key] = np.where(j >= 0, st[np.clip(j, 0, None)], 0).astype(np.int8)
         return self.cache[key]

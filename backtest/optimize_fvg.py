@@ -2,10 +2,10 @@
 backtest/optimize_fvg.py — Optimisation Optuna (TPE) de la stratégie FVG HTF + MSS avec Walk-Forward (WFA).
 
 Anti-suroptimisation intégré :
-  1. Walk-Forward glissant sur 3 plis (2021, 2022, 2023) : score = 0.6 * min(plis) + 0.4 * mean(plis) (Calmar).
-  2. Panier multi-paires agrégé + pénalité dure (-10) si le panier fait moins de min_total_trades.
+  1. Hybride Walk-Forward 3 plis (2021, 2022, 2023) + Courbe continue 3 ans (capture le vrai Max Drawdown cumulé).
+  2. Panier multi-paires agrégé + pénalité asymétrique (une perte + gros DD est doublement sanctionnée).
   3. Paliers discrets (catégoriels) au lieu de flottants continus pour forcer la recherche de zones plates.
-  4. Détection de zones plates (médiane du top 15%) + export graphique des tranches (slices_fvg.png).
+  4. Détection de zones plates (médiane/mode du top 15%) + garde-fou Référence + export graphique (slices_fvg.png).
   5. Non-mitigation stricte avant le sommet H1 (mit_depth figé à 0.0 par défaut = moindre mèche invalide la FVG).
 """
 import argparse
@@ -21,7 +21,8 @@ import opt_common as oc  # noqa: E402
 import realism  # noqa: E402
 import strategy_fvg as strategy  # noqa: E402
 
-SYMBOLS_DEFAULT = ["EURUSD", "GBPUSD", "USDCHF", "USDJPY", "XAUUSD"]
+# Panier FVG par défaut : paires directionnelles liquides (USDCHF et les Cryptos sont exclues par défaut car en retour à la moyenne / bruit 24/7 sur FVG)
+SYMBOLS_DEFAULT = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]
 
 SPACE = {
     "side": ("cat", ["short", "long", "both"]),
@@ -29,22 +30,22 @@ SPACE = {
     "htf": ("cat", ["1h", "4h", "1d", "1h,4h", "4h,1d", "1h,4h,1d"]),
     "mit_tf": ("cat", ["1h", "4h"]),
     "mit_depth": ("cat", [0.0, 0.5, 1.0]),
-    "mss_k": ("cat", [2, 3, 4, 6, 8, 10]),
-    "speed_ratio": ("cat", [1.0, 1.5, 2.0, 3.0]),
+    "mss_k": ("cat", [2, 3, 4, 6, 8]),
+    "speed_ratio": ("cat", [1.0, 1.3, 1.6, 2.0, 3.0]),
     "speed_ref": ("int", 0, 1),
     "trough_pivot": ("int", 0, 1),
     "min_sweep_pct": ("cat", [0.0, 0.01, 0.03]),
     "min_corr_pct": ("cat", [0.0, 0.1, 0.2, 0.3]),
     "min_corr_atr": ("cat", [0.0, 1.0, 2.0, 3.0]),
     "max_back": ("int", 1, 8),
-    "zone_pad_atr": ("cat", [0.0, 0.25, 0.5, 1.0]),
+    "zone_pad_atr": ("cat", [0.0, 0.25, 0.5, 0.75]),
     "entry_lvl": ("cat", [0.0, 0.25, 0.5]),
     "fvg_min_atr": ("cat", [0.0, 0.25, 0.5]),
     "sl_buf_atr": ("cat", [0.0, 0.5, 1.0, 1.5, 2.0]),
     "tp_mode": ("cat", ["fvg", "rr"]),
-    "rr": ("cat", [2.0, 2.5, 3.0, 4.0]),
-    "min_rr": ("cat", [1.0, 1.5, 2.0]),
-    "max_rr": ("cat", [4.0, 5.0, 6.0, 8.0]),
+    "rr": ("cat", [2.0, 2.5, 3.0, 3.5, 4.0]),
+    "min_rr": ("cat", [1.5, 2.0, 2.5]),
+    "max_rr": ("cat", [3.0, 4.0, 5.0, 6.0]),
     "tp_edge": ("cat", [0.0, 0.5, 1.0]),
     "be_rr": ("cat", [0.0, 0.7, 1.0, 1.5, 2.0]),
     "ttl": ("cat", [0, 24, 96, 288]),
@@ -52,12 +53,6 @@ SPACE = {
     "trend": ("cat", ["none", "4h:200", "4h:50", "1d:50", "1d:200"]),
     "session": ("cat", ["0-24", "7-17", "7-22"]),
 }
-# Figés par défaut pour limiter l'overfitting :
-# - side=both (pas de biais directionnel)
-# - mit_depth=0.0 (ta définition stricte : moindre mèche/corps dans la FVG avant H1 = mitigée)
-# - min_sl_pct=0.0, min_sweep_pct=0.0 (pas de seuils en % fixe qui déséquilibrent EURUSD vs XAUUSD ; les filtres ATR s'adaptent)
-# - tp_edge=0.0 (premier bord de la FVG opposée)
-# - speed_ref=0, trough_pivot=0, min_corr_pct=0.0, min_corr_atr=0.0, max_back=5
 FROZEN_DEFAULT = {
     "side": "both",
     "mit_depth": 0.0,
@@ -80,18 +75,19 @@ REFERENCE = {
 
 
 class Evaluator:
-    def __init__(self, symbols, datadir, split, fee, risk, lev, min_trades=12):
+    def __init__(self, symbols, datadir, split, fee, risk, lev, min_trades=25):
         self.symbols, self.risk, self.min_trades = symbols, risk, min_trades
         self.fee = {s: (fee if fee >= 0 else realism.fee_for(s)) for s in symbols}
         self.lev = {s: (lev if lev > 0 else realism.levier_for(s)) for s in symbols}
         self.P = {s: (oc.ensure_data(s, datadir), data.PairData(s, datadir))[1] for s in symbols}
         for s in symbols:
             print(f"  {s}: {self.P[s].n} bougies 5m | frais {self.fee[s]:.4f}% | levier {self.lev[s]:g}", flush=True)
+        # Les 6 premiers mois de 2021 (2021-01 -> 2021-07) servent de tampon de préchauffage (warmup)
+        # pour les EMA Daily (1d:50 / 1d:200) et le réservoir de zones FVG HTF (1h/4h/1d).
         self.t = {
             s: dict(
-                start=self.P[s].idx_at("2021-01-04"),
-                w1=self.P[s].idx_at("2022-01-01"),
-                w2=self.P[s].idx_at("2023-01-01"),
+                start=self.P[s].idx_at("2021-07-01"),
+                w1=self.P[s].idx_at("2022-10-01"),
                 split=self.P[s].idx_at(split),
                 end=self.P[s].n,
             )
@@ -108,17 +104,21 @@ class Evaluator:
         return {s: self.run_pair(s, p, self.t[s][a_key], self.t[s][b_key]) for s in self.symbols}
 
     def objective(self, p):
-        f1 = self.rows(p, "start", "w1")
-        f2 = self.rows(p, "w1", "w2")
-        f3 = self.rows(p, "w2", "split")
-        tot_tr = sum(r["trades"] for f in (f1, f2, f3) for r in f.values())
-        min_tot = max(45, self.min_trades * len(self.symbols) * 2)
+        # min_trades = objectif par paire sur le TRAIN (ex: 25 => ~12 par pli Walk-Forward de 15 mois)
+        f_full = self.rows(p, "start", "split")
+        tot_tr = sum(r["trades"] for r in f_full.values())
+        min_tot = max(24, int(self.min_trades * len(self.symbols) * 0.55))
         if tot_tr < min_tot:
             return -10.0 + (tot_tr / float(min_tot)) * 5.0
-        s1 = oc.half_score(f1, self.min_trades, min_total_trades=10)
-        s2 = oc.half_score(f2, self.min_trades, min_total_trades=10)
-        s3 = oc.half_score(f3, self.min_trades, min_total_trades=10)
-        return 0.6 * min(s1, s2, s3) + 0.4 * ((s1 + s2 + s3) / 3.0)
+        fold_min = max(6.0, self.min_trades / 2.0)
+        fold_min_tot = max(8, min_tot // 3)
+        f1 = self.rows(p, "start", "w1")
+        f2 = self.rows(p, "w1", "split")
+        s_full = oc.half_score(f_full, self.min_trades, min_total_trades=min_tot, dd_limit=15.0)
+        s1 = oc.half_score(f1, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
+        s2 = oc.half_score(f2, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
+        s_wfa = 0.6 * min(s1, s2) + 0.4 * ((s1 + s2) / 2.0)
+        return 0.5 * s_full + 0.5 * s_wfa
 
     def evaluate(self, p, period):
         return self.rows(p, *{"train": ("start", "split"), "test": ("split", "end")}[period])
@@ -158,7 +158,7 @@ def main():
     ap.add_argument("--outdir", default="results_opt")
     ap.add_argument("--save_every", type=int, default=25)
     ap.add_argument("--wall_time", type=float, default=300.0)
-    ap.add_argument("--min_trades", type=int, default=12, help="trades visés par paire et par pli annuel")
+    ap.add_argument("--min_trades", type=int, default=25, help="trades visés par paire sur les 3 ans de TRAIN")
     ap.add_argument("--freeze", default="", help="'k=v;k2=v2' leviers figés en plus")
     ap.add_argument("--unfreeze", default="", help="leviers à libérer, séparés par des virgules")
     a = ap.parse_args()

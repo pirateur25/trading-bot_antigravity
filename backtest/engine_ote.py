@@ -16,8 +16,11 @@ import pandas as pd
 
 
 def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slippage_pct=0.02,
-                 max_leverage=1.0, allow_short=True, max_bars=None, be_rr=None):
-    df = strategy.prepare(df.copy()).reset_index(drop=True)
+                 max_leverage=1.0, allow_short=True, max_bars=None, be_rr=None, pre_prepared=False):
+    if not pre_prepared:
+        df = strategy.prepare(df.copy()).reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
     d = {col: df[col].to_numpy() for col in df.columns}
     o, h, l, c = d["open"], d["high"], d["low"], d["close"]
     times = df["time"]
