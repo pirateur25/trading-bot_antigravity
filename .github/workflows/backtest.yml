@@ -1,0 +1,140 @@
+name: Backtest OTE + FVG
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Paires forex (EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD)"
+        default: "EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD"
+      crypto:
+        description: "Cryptos FTMO (BTCUSD,ETHUSD,XRPUSD — vide = pas de crypto)"
+        default: ""
+      start:
+        description: "Date de début (AAAA-MM-JJ)"
+        default: "2021-01-04"
+      end:
+        description: "Date de fin (vide = fin des données)"
+        default: ""
+      risk_ote:
+        description: "Risque OTE par trade (%)"
+        default: "0.5"
+      risk_fvg:
+        description: "Risque FVG par trade (%)"
+        default: "0.75"
+      leverage:
+        description: "Levier maximum (Swing FTMO = 30 forex, 2 crypto)"
+        default: "30"
+      mode:
+        description: "Stratégies à lancer"
+        type: choice
+        default: "both"
+        options: ["both", "ote_only", "fvg_only"]
+      sim_challenge:
+        description: "Simuler le challenge FTMO ?"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
+      ftmo_mode:
+        description: "Type de challenge FTMO"
+        type: choice
+        default: "2phases"
+        options: ["2phases", "1phase"]
+      use_best_ote:
+        description: "Utiliser results/best_params_ote.json ?"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
+      use_best_fvg:
+        description: "Utiliser results/best_params_fvg.json ?"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
+      params_ote:
+        description: "Réglages OTE supplémentaires (k=v;k2=v2)"
+        default: ""
+      params_fvg:
+        description: "Réglages FVG supplémentaires (k=v;k2=v2)"
+        default: ""
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: Compilation du noyau C (FVG)
+        run: |
+          gcc -O3 -march=native -shared -fPIC -o backtest/_kernels.so backtest/kernels.c -lm
+          echo "Noyau C compilé."
+
+      - name: Téléchargement des données crypto (si demandé)
+        if: ${{ inputs.crypto != '' }}
+        env:
+          CRYPTO_SYMBOLS: ${{ inputs.crypto }}
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, "backtest")
+          import data_crypto as dc
+          syms = os.environ["CRYPTO_SYMBOLS"].split(",")
+          for sym in syms:
+              sym = sym.strip().upper()
+              if not sym: continue
+              binance_sym = dc.ftmo_to_binance(sym)
+              print(f"Téléchargement {sym} (Binance: {binance_sym}) ...")
+              try:
+                  df, src = dc.load(binance_sym, "5m", "2021-01-01", source="auto", use_cache=False)
+                  df.to_csv(f"data/{sym}.csv.gz", index=False, compression="gzip")
+                  print(f"  {sym}: {len(df)} bougies depuis {src}")
+              except Exception as e:
+                  print(f"  ERREUR {sym}: {e}")
+          EOF
+
+      - name: Lancement du backtest
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          SYMBOLS: ${{ inputs.symbols }}
+          CRYPTO: ${{ inputs.crypto }}
+          START: ${{ inputs.start }}
+          END: ${{ inputs.end }}
+          RISK_OTE: ${{ inputs.risk_ote }}
+          RISK_FVG: ${{ inputs.risk_fvg }}
+          LEVERAGE: ${{ inputs.leverage }}
+          MODE: ${{ inputs.mode }}
+          SIM_CHALLENGE: ${{ inputs.sim_challenge }}
+          FTMO_MODE: ${{ inputs.ftmo_mode }}
+          USE_BEST_OTE: ${{ inputs.use_best_ote }}
+          USE_BEST_FVG: ${{ inputs.use_best_fvg }}
+          PARAMS_OTE: ${{ inputs.params_ote }}
+          PARAMS_FVG: ${{ inputs.params_fvg }}
+        run: |
+          python backtest/run_backtest.py \
+            --symbols "$SYMBOLS" \
+            --crypto "$CRYPTO" \
+            --start "$START" \
+            --end "$END" \
+            --risk_ote "$RISK_OTE" \
+            --risk_fvg "$RISK_FVG" \
+            --leverage "$LEVERAGE" \
+            --mode "$MODE" \
+            --sim_challenge "$SIM_CHALLENGE" \
+            --ftmo_mode "$FTMO_MODE" \
+            --use_best_ote "$USE_BEST_OTE" \
+            --use_best_fvg "$USE_BEST_FVG" \
+            --params_ote "$PARAMS_OTE" \
+            --params_fvg "$PARAMS_FVG"
+
+      - name: Sauvegarde des résultats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultats-backtest
+          path: results/
