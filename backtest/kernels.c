@@ -111,7 +111,7 @@ void mitigate(int nz, const double *zlo, const double *zhi, const int64_t *form,
 // (3) entrée = niveau choisi du FVG, SL = au-dessus de H2 (+ marge ATR), (4) TP = RR fixe ou prochain FVG HTF non mitigé.
 // P : 0 marge zone (ATR), 1 niveau d'entrée dans le FVG (0 = bord proche, 1 = bord lointain), 2 marge SL (ATR), 3 mode TP (0 RR, 1 FVG),
 //     4 RR, 5 RR mini (mode FVG), 6 bord du FVG visé (0 proche .. 1 lointain), 7 RR maxi (plafond), 8 taille mini du FVG (ATR)
-int build_signals(int ne, const int *ev_t, const int *ev_h2i, const double *ev_h2p, const int64_t *cclose,
+int build_signals(int ne, const int *ev_t, const int *ev_h1i, const int *ev_h2i, const double *ev_h2p, const int64_t *cclose,
                   const double *ch, const double *cl, const double *cc, const double *catr,
                   int np, const double *plo, const double *phi, const int64_t *pform, const int64_t *pmit,
                   int no, const double *olo, const double *ohi, const int64_t *oform, const int64_t *omit,
@@ -120,16 +120,16 @@ int build_signals(int ne, const int *ev_t, const int *ev_h2i, const double *ev_h
     int na = 0, pp = 0, nao = 0, po = 0, cnt = 0;
     for (int e = 0; e < ne; e++) {
         ok[e] = 0;
-        int t = ev_t[e], h2i = ev_h2i[e]; int64_t T = cclose[t]; double H2 = ev_h2p[e], atr = catr[t];
+        int t = ev_t[e], h1i = ev_h1i[e], h2i = ev_h2i[e]; int64_t T = cclose[t], T_h1 = cclose[h1i]; double H2 = ev_h2p[e], atr = catr[t];
         while (pp < np && pform[pp] <= T) act[na++] = pp++;
-        for (int a = 0; a < na;) { if (pmit[act[a]] <= T) act[a] = act[--na]; else a++; }
         if (P[3] > 0.5) {
             while (po < no && oform[po] <= T) acto[nao++] = po++;
             for (int a = 0; a < nao;) { if (omit[acto[a]] <= T) acto[a] = acto[--nao]; else a++; }
         }
         if (!(atr > 0)) continue;
         int z = -1;
-        for (int a = 0; a < na; a++) { int q = act[a]; if (plo[q] <= H2 && H2 <= phi[q] + P[0] * atr) { z = q; break; } }
+        // Une zone est valide si elle est formée AVANT H1 (pform[q] <= T_h1) et NON mitigée par une bougie HTF clôturée avant H1 (pmit[q] > T_h1)
+        for (int a = 0; a < na; a++) { int q = act[a]; if (pform[q] <= T_h1 && pmit[q] > T_h1 && plo[q] <= H2 && H2 <= phi[q] + P[0] * atr) { z = q; break; } }
         if (z < 0) continue;
         int j = -1;
         for (int q = h2i; q + 2 <= t; q++) if (ch[q + 2] < cl[q] && (cl[q] - ch[q + 2]) >= P[8] * atr) { j = q; break; }

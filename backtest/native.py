@@ -26,7 +26,7 @@ _lib.mss_events.argtypes = [C.c_int, f8, f8, f8, f8, C.c_int, C.c_double, C.c_in
 _lib.mitigate.restype = None
 _lib.mitigate.argtypes = [C.c_int, f8, f8, i8, C.c_int, C.c_double, C.c_int, f8, f8, i8, i8, i8]
 _lib.build_signals.restype = C.c_int
-_lib.build_signals.argtypes = [C.c_int, i4, i4, f8, i8, f8, f8, f8, f8,
+_lib.build_signals.argtypes = [C.c_int, i4, i4, i4, f8, i8, f8, f8, f8, f8,
                                C.c_int, f8, f8, i8, i8, C.c_int, f8, f8, i8, i8, f8, b1, f8, f8, f8, i4]
 _lib.simulate.restype = C.c_int
 _lib.simulate.argtypes = [C.c_int, f8, f8, f8, f8, C.c_int, i4, f8, f8, f8,
@@ -63,7 +63,7 @@ def build_signals(ev, conf, pz, oz, P):
     ok = np.zeros(ne, np.int8)
     entry, sl, tp = (np.zeros(ne) for _ in range(3))
     zid = np.full(ne, -1, np.int32)
-    _lib.build_signals(ne, _c(ev["t"], np.int32), _c(ev["h2i"], np.int32), _c(ev["h2p"], np.float64), _c(conf["close_ns"], np.int64),
+    _lib.build_signals(ne, _c(ev["t"], np.int32), _c(ev["h1i"], np.int32), _c(ev["h2i"], np.int32), _c(ev["h2p"], np.float64), _c(conf["close_ns"], np.int64),
                        _c(conf["h"], np.float64), _c(conf["l"], np.float64), _c(conf["c"], np.float64), _c(conf["atr"], np.float64),
                        len(pz["lo"]), pz["lo"], pz["hi"], pz["form"], pz["mit"],
                        len(oz["lo"]), oz["lo"], oz["hi"], oz["form"], oz["mit"],

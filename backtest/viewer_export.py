@@ -80,13 +80,15 @@ def write_trades_json(trades, path):
 
 def build(symbols, datadir, out, since=None):
     import data_forex as data
+    import opt_common as oc
     pairs = []
     for s in symbols:
+        oc.ensure_data(s, datadir)   # crypto absente : téléchargement automatique
         P = data.PairData(s, datadir)
         e = encode_pair(P, s, since)
         pairs.append(e)
         print(f"{s}: {len(e['b64']) / 1e6:.1f} Mo", flush=True)
-    html = open(os.path.join(HERE, "..", "viewer", "template.html"), encoding="utf-8").read().replace("/*PAIRS*/", json.dumps(pairs, separators=(",", ":")))
+    html = open(os.path.join(HERE, "..", "viewer", "template.html"), encoding="utf-8").read().replace("/*PAIRS*/[]", json.dumps(pairs, separators=(",", ":")))
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     open(out, "w", encoding="utf-8").write(html)
     print(f"{out} : {len(html) / 1e6:.1f} Mo")

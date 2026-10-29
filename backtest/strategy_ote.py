@@ -72,11 +72,13 @@ PARAMS = {
     "min_rr": 0.1101,              # ratio gain/risque minimum (0 = pas de filtre)
     "side": "long",             # "both" | "long" | "short"
     "be_rr": 1000.0,            # break-even : SL placé au prix d'entrée dès que le gain atteint X fois le risque (1000 = désactivé)
+    "session_start": 0,         # heures UTC d'entrée autorisées [start, end)
+    "session_end": 24,
 }
 
 ENGINE = {"allow_short": True, "max_bars": None}
 
-TF_MIN = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+TF_MIN = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 NS_MIN = 60 * 10**9
 
 
@@ -87,14 +89,16 @@ def _csv(s):
 # ------------------------------------------------------------------ données multi-unités de temps
 
 def make_frame(df, minutes, base_min):
-    """Bougies de l'unité demandée, uniquement les bougies COMPLÈTES, avec leurs heures d'ouverture / clôture."""
+    """Bougies de l'unité demandée, uniquement les bougies COMPLÈTES (ou >=60% pour 4h/1d sur forex/indices), avec leurs heures d'ouverture / clôture."""
     g = df.set_index("time")
     if minutes == base_min:
         f = g[["open", "high", "low", "close"]].copy()
     else:
         f = g.resample(f"{minutes}min").agg(open=("open", "first"), high=("high", "max"), low=("low", "min"),
                                            close=("close", "last"), n=("close", "count"))
-        f = f[f["n"] == minutes // base_min][["open", "high", "low", "close"]]
+        full = min(minutes // base_min, float(np.quantile(f["n"].dropna(), 0.9))) if len(f) else minutes // base_min
+        min_fill = 1.0 if minutes <= 15 else 0.6
+        f = f[f["n"] >= max(1, int(np.ceil(full * min_fill)))][["open", "high", "low", "close"]]
     open_ns = pd.DatetimeIndex(f.index).as_unit("ns").asi8
     return {"o": f["open"].to_numpy(float), "h": f["high"].to_numpy(float), "l": f["low"].to_numpy(float),
             "c": f["close"].to_numpy(float), "open_ns": open_ns, "close_ns": open_ns + minutes * NS_MIN}
@@ -174,7 +178,7 @@ def zigzag(h, l, atr, mult):
 
 
 def trend_bear(T, th, tl, tc, p):
-    """Tendance baissière à chaque bougie de l'unité de tendance (bool). Loi de Dow, moyenne mobile, ou les deux."""
+    """Tendance baissière à chaque bougie de l'unité de tendance (bool). Loi de Dow, moyenne mobile, EMA simple (comme FVG), ou les deux."""
     mode = p["trend_mode"]
     n = len(tc)
     bear_dow = np.zeros(n, bool)
@@ -185,8 +189,12 @@ def trend_bear(T, th, tl, tc, p):
         with np.errstate(invalid="ignore"):
             # sommets ET creux de plus en plus bas ; tendance annulée si le prix clôture au-dessus du dernier sommet
             bear_dow = have & (zz["cur_hi"] < zz["prev_hi"]) & (zz["cur_lo"] < zz["prev_lo"]) & (tc <= zz["cur_hi"])
-    if mode in ("ma", "both"):
+    if mode in ("ma", "both", "ema"):
         ema = pd.Series(tc).ewm(span=p["ma_len"], adjust=False).mean().to_numpy()
+        if mode == "ema":
+            with np.errstate(invalid="ignore"):
+                bear_ma = ( np.arange(n) >= p["ma_len"] ) & (tc < ema)
+            return bear_ma
         k = p["ma_slope_bars"]
         slope = ema - np.concatenate([np.full(k, np.nan), ema[:-k]])
         with np.errstate(invalid="ignore"):
@@ -431,6 +439,8 @@ def run_world(F, B, jm, p, sign):
             _, rh, rl, _ = view(F[R])
             ranges[R] = bear_range(F[R], rh, rl, p, R)
     _, bh, bl, _ = view(B)
+    s0, s1 = int(p.get("session_start", 0)), int(p.get("session_end", 24))
+    b_hours = (B["close_ns"] // (60 * NS_MIN)) % 24 if (s0, s1) != (0, 24) else None
     out = []
     for Y in _csv(p["conf_tfs"]):
         if Y not in F:
@@ -459,6 +469,11 @@ def run_world(F, B, jm, p, sign):
             if jt < 0 or (p["trend_filter"] and not bear[jt]):
                 _d(kind, "1 hors tendance")
                 continue
+            if b_hours is not None:
+                hr = int(b_hours[i])
+                if not ((s0 <= hr < s1) if s0 < s1 else (hr >= s0 or hr < s1)):
+                    _d(kind, "1 hors session")
+                    continue
             for R, rg in ranges.items():
                 jr = jm[R][i]
                 if jr < 0 or not rg["valid"][jr]:

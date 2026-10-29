@@ -1,6 +1,11 @@
-"""backtest/opt_common.py — briques communes aux optimiseurs Optuna (OTE et FVG)."""
+"""backtest/opt_common.py — briques communes aux optimiseurs Optuna (OTE et FVG), avec Walk-Forward et détection de plateaux."""
+import json
 import os
+import time
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import requests
 
@@ -21,16 +26,18 @@ def parse_kv(text):
 
 
 def pair_score(st, min_trades):
-    """Rendement / drawdown (plafonné à ±3) pondéré par min(1, trades/min_trades).
-    Avant : une paire sous le minimum valait -3 => le paysage était plat (tout = -3) et Optuna ne trouvait rien.
-    Maintenant : peu de trades = score réduit proportionnellement, donc l'optimiseur a un gradient pour y remonter."""
+    """Ratio de Calmar (Rendement / Max Drawdown, plafonné à ±3) pondéré par min(1, trades/min_trades)."""
     if st["trades"] == 0:
         return 0.0
     s = float(np.clip(st["return_pct"] / max(abs(st["max_dd_pct"]), 2.0), -3, 3))
     return s * min(1.0, st["trades"] / float(min_trades))
 
 
-def half_score(rows, min_trades):
+def half_score(rows, min_trades, min_total_trades=60):
+    """Calmar moyen sur le panier de paires, avec pénalité dure (-10) si le panier fait trop peu de trades au total."""
+    tot_t = sum(st["trades"] for st in rows.values())
+    if tot_t < min_total_trades:
+        return -10.0 + (tot_t / float(max(min_total_trades, 1))) * 5.0
     return float(np.mean([pair_score(st, min_trades) for st in rows.values()]))
 
 
@@ -56,7 +63,7 @@ def fmt(rows):
     return " | ".join(f"{s}: {st['return_pct']:+.1f}% DD {st['max_dd_pct']:.1f}% {st['trades']}t" for s, st in rows.items())
 
 
-def tg(text=None, document=None):
+def tg(text=None, photo=None, document=None):
     token, chat = os.getenv("BOT_TOKEN"), os.getenv("CHAT_ID")
     if not token or not chat:
         return
@@ -64,6 +71,9 @@ def tg(text=None, document=None):
         if text:
             for i in range(0, len(text), 4000):
                 requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text[i:i + 4000]}, timeout=20)
+        if photo and os.path.exists(photo):
+            with open(photo, "rb") as f:
+                requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={"chat_id": chat}, files={"photo": f}, timeout=30)
         if document and os.path.exists(document):
             with open(document, "rb") as f:
                 requests.post(f"https://api.telegram.org/bot{token}/sendDocument", data={"chat_id": chat}, files={"document": f}, timeout=60)
@@ -71,20 +81,97 @@ def tg(text=None, document=None):
         print("TELEGRAM erreur:", e)
 
 
+def apply_space(trial, space, frozen, base):
+    """Tire les leviers de `space` dans `trial` ; les leviers figés prennent leur valeur fixe. Renvoie le dict de paramètres."""
+    p = dict(base)
+    p.update(frozen)
+    for k, spec in space.items():
+        if k in frozen:
+            continue
+        if spec[0] == "cat":
+            p[k] = trial.suggest_categorical(k, spec[1])
+        elif spec[0] == "float":
+            p[k] = trial.suggest_float(k, spec[1], spec[2])
+        else:
+            p[k] = trial.suggest_int(k, spec[1], spec[2])
+    return p
+
+
+def plateau_center(done_trials, space, frozen, base):
+    """Sélectionne le centre du plateau stable (médiane du top 15% des essais) plutôt que le pic isolé."""
+    valid = [t for t in done_trials if t.value is not None and t.value > -5.0]
+    if len(valid) < 5:
+        return None
+    valid.sort(key=lambda t: t.value, reverse=True)
+    top = valid[:max(3, len(valid) // 7)]
+    p = dict(base)
+    p.update(frozen)
+    for k, spec in space.items():
+        if k in frozen:
+            continue
+        vals = [t.user_attrs["p"][k] for t in top if k in t.user_attrs.get("p", {})]
+        if not vals:
+            continue
+        if spec[0] == "cat":
+            p[k] = max(set(vals), key=vals.count)
+        elif spec[0] == "int":
+            p[k] = int(round(float(np.median(vals))))
+        else:
+            p[k] = round(float(np.median(vals)), 4)
+    if "session" in p and isinstance(p["session"], str) and "-" in p["session"]:
+        s0, s1 = p["session"].split("-")
+        p["session_start"], p["session_end"] = int(s0), int(s1)
+    return p
+
+
+def save_slice_plot(done_trials, space, frozen, outpath, label):
+    """Trace les 'Parameter Slices' (Zones Plates vs Pics) pour tous les paramètres optimisés."""
+    keys = [k for k in space if k not in frozen]
+    if not keys or len(done_trials) < 3:
+        return None
+    cols = min(3, len(keys))
+    rows_n = (len(keys) + cols - 1) // cols
+    fig, axes = plt.subplots(rows_n, cols, figsize=(4.8 * cols, 3.2 * rows_n), squeeze=False)
+    for idx, k in enumerate(keys):
+        ax = axes[idx // cols][idx % cols]
+        xs, ys = [], []
+        for t in done_trials:
+            if t.value is not None and t.value > -9.5 and k in t.user_attrs.get("p", {}):
+                xs.append(t.user_attrs["p"][k])
+                ys.append(t.value)
+        if xs:
+            if isinstance(xs[0], str):
+                cats = sorted(set(xs))
+                xi = [cats.index(v) for v in xs]
+                ax.scatter(xi, ys, alpha=0.55, s=18, c=ys, cmap="RdYlGn")
+                ax.set_xticks(range(len(cats)))
+                ax.set_xticklabels(cats, rotation=20)
+            else:
+                ax.scatter(xs, ys, alpha=0.55, s=18, c=ys, cmap="RdYlGn")
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_title(k, fontsize=10)
+        ax.set_ylabel("Score WFA / Calmar", fontsize=8)
+        ax.grid(alpha=0.25)
+    for idx in range(len(keys), rows_n * cols):
+        axes[idx // cols][idx % cols].set_visible(False)
+    fig.suptitle(f"Analyse Zones Plates (Parameter Slices) — {label.upper()}", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=110)
+    plt.close(fig)
+    return outpath
+
+
 def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summary_file):
-    """Boucle Optuna commune. `baseline` = réglages de référence : ils sont testés EN PREMIER (trial 0) et servent de comparaison
-    finale (si l'optimisation ne bat pas la référence sur TRAIN, ou si elle perd sur TEST, le résumé le dit clairement)."""
-    import json
-    import time
+    """Boucle Optuna commune avec Walk-Forward, détection de plateau et graphique de tranches."""
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     storage = f"sqlite:///{os.path.join(a.outdir, 'study_' + label + '.db')}"
-    study = optuna.create_study(study_name=f"{label}_v2", storage=storage, direction="maximize", load_if_exists=True,
-                                sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=min(40, max(10, a.n_trials // 5))))
+    study = optuna.create_study(study_name=f"{label}_v3", storage=storage, direction="maximize", load_if_exists=True,
+                                sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=min(35, max(10, a.n_trials // 4))))
     if len(study.trials) == 0:
         try:
             study.enqueue_trial({k: v for k, v in baseline.items() if k in space and k not in frozen})
-        except Exception as e:  # référence hors bornes : on continue sans
+        except Exception as e:
             print("baseline non injectée:", e)
     t0, limit = time.time(), a.wall_time * 60 - 180
 
@@ -102,7 +189,7 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
         if tr.state.name == "COMPLETE" and st.best_trial.number == tr.number:
             json.dump(st.best_trial.user_attrs["p"], open(os.path.join(a.outdir, best_file), "w"), indent=1)
         if n % a.save_every == 0:
-            print(f"  [{n} essais] meilleur score train {st.best_value:.3f}", flush=True)
+            print(f"  [{n} essais] meilleur score WFA {st.best_value:.3f}", flush=True)
 
     study.optimize(objective, n_trials=a.n_trials, callbacks=[cb], catch=(Exception,), show_progress_bar=False)
     done = [t for t in study.trials if t.state.name == "COMPLETE" and "p" in t.user_attrs]
@@ -110,19 +197,27 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
         print("Aucun essai valide.")
         return None
     best = study.best_trial
-    p = best.user_attrs["p"]
+    p_peak = best.user_attrs["p"]
+    p_plat = plateau_center(done, space, frozen, baseline)
+    sc_plat = ev.objective(p_plat) if p_plat is not None else float("-inf")
+    # Si le centre du plateau garde >= 80% du score du pic (ou si le pic est proche), on privilégie le plateau
+    use_plat = p_plat is not None and sc_plat > -5.0 and (sc_plat >= best.value * 0.80 or best.value <= 0)
+    p = p_plat if use_plat else p_peak
+    if p_plat is not None:
+        json.dump(p_plat, open(os.path.join(a.outdir, f"plateau_{best_file}"), "w"), indent=1)
     json.dump(p, open(os.path.join(a.outdir, best_file), "w"), indent=1)
+
     tried = sorted({k for k in space if k not in frozen})
-    base_score = next((t.value for t in done if t.number == 0), None)
+    base_score = ev.objective(baseline)
     rows = {"train": ev.evaluate(p, "train"), "test": ev.evaluate(p, "test")}
     brows = {"train": ev.evaluate(baseline, "train"), "test": ev.evaluate(baseline, "test")}
     ntrades = sum(r["trades"] for r in rows["train"].values())
-    L = [f"✅ Optuna {label.upper()} terminé — {len(done)} essais",
+    L = [f"✅ Optuna {label.upper()} (Walk-Forward) — {len(done)} essais",
+         f"Mode retenu : {'🟢 CENTRE DU PLATEAU STABLE' if use_plat else '🔶 PIC OPTUNA'} (score pic {best.value:.3f} | plateau {sc_plat:.3f} | réf {base_score:.3f})",
          f"Leviers optimisés ({len(tried)}) : {', '.join(tried)}",
          "Leviers figés : " + (", ".join(f"{k}={v}" for k, v in frozen.items()) or "aucun"),
-         f"Score TRAIN (pire des 2 moitiés) : optimisé {best.value:.3f} | référence {base_score if base_score is None else round(base_score, 3)}",
-         f"TRAIN optimisé : {fmt(rows['train'])}", f"TRAIN référence : {fmt(brows['train'])}",
-         f"TEST 2024+ optimisé : {fmt(rows['test'])}", f"TEST 2024+ référence : {fmt(brows['test'])}"]
+         f"TRAIN (2021-2023) retenu : {fmt(rows['train'])}", f"TRAIN référence : {fmt(brows['train'])}",
+         f"TEST (2024+) retenu : {fmt(rows['test'])}", f"TEST référence : {fmt(brows['test'])}"]
     tst = sum(r["return_pct"] for r in rows["test"].values())
     tb = sum(r["return_pct"] for r in brows["test"].values())
     for per, rr in (("TRAIN", rows["train"]), ("TEST", rows["test"])):
@@ -130,39 +225,24 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
         L.append(f"Sens {per} : achats {sl:+.1f} R | ventes {ss:+.1f} R")
         tot = sl + ss
         if p.get("side") == "both" and tot > 0 and max(sl, ss) > 0.8 * tot and min(sl, ss) < 0.2 * tot:
-            L.append(f"⚠️ {per} : le profit vient presque d'un seul sens → dérive du marché probable, pas un avantage réel.")
-    if ntrades < 40:
-        L.append(f"⚠️ Seulement {ntrades} trades sur le train : configuration trop sélective, résultat non fiable.")
-    if base_score is not None and best.value <= base_score + 1e-9:
-        L.append("➡️ L'optimisation n'a PAS battu la référence sur le train : garde la référence.")
+            L.append(f"⚠️ {per} : le profit vient presque d'un seul sens → dérive du marché probable.")
+    if ntrades < 60:
+        L.append(f"⚠️ Seulement {ntrades} trades sur le train : configuration trop sélective.")
+    if max(best.value, sc_plat) <= base_score + 1e-9:
+        L.append("➡️ L'optimisation n'a PAS battu la référence sur le Walk-Forward : garde la référence.")
     elif tst < tb:
-        L.append("⚠️ Meilleur que la référence sur TRAIN mais PIRE sur TEST (somme des rendements) : probable sur-apprentissage.")
+        L.append("⚠️ Meilleur sur Walk-Forward mais moins bon que la référence sur TEST 2024+.")
     else:
-        L.append("👍 Meilleur que la référence sur TRAIN et sur TEST.")
+        L.append("👍 Meilleur que la référence sur TRAIN (Walk-Forward) ET sur TEST 2024+.")
     txt = "\n".join(L)
     print("\n" + txt)
     print(json.dumps(p, indent=1))
     open(os.path.join(a.outdir, summary_file), "w", encoding="utf-8").write(txt + "\n")
+    slice_png = save_slice_plot(done, space, frozen, os.path.join(a.outdir, f"slices_{label}.png"), label)
     try:
         study.trials_dataframe().to_csv(os.path.join(a.outdir, f"optuna_log_{label}.csv"), index=False)
     except Exception as e:
         print("export log:", e)
-    tg(txt)
+    tg(txt, photo=slice_png)
     tg(document=os.path.join(a.outdir, best_file))
-    return p
-
-
-def apply_space(trial, space, frozen, base):
-    """Tire les leviers de `space` dans `trial` ; les leviers figés prennent leur valeur fixe. Renvoie le dict de paramètres."""
-    p = dict(base)
-    p.update(frozen)
-    for k, spec in space.items():
-        if k in frozen:
-            continue
-        if spec[0] == "cat":
-            p[k] = trial.suggest_categorical(k, spec[1])
-        elif spec[0] == "float":
-            p[k] = trial.suggest_float(k, spec[1], spec[2])
-        else:
-            p[k] = trial.suggest_int(k, spec[1], spec[2])
     return p
