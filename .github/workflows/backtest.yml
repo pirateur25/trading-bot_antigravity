@@ -78,19 +78,22 @@ jobs:
         if: ${{ inputs.crypto != '' }}
         env:
           CRYPTO_SYMBOLS: ${{ inputs.crypto }}
+          START_DATE: ${{ inputs.start }}
         run: |
           python - <<'EOF'
           import os, sys
           sys.path.insert(0, "backtest")
           import data_crypto as dc
           syms = os.environ["CRYPTO_SYMBOLS"].split(",")
+          st = os.environ.get("START_DATE") or "2021-01-01"
+          dl_start = min(st, "2021-01-01")
           for sym in syms:
               sym = sym.strip().upper()
               if not sym: continue
               binance_sym = dc.ftmo_to_binance(sym)
-              print(f"Téléchargement {sym} (Binance: {binance_sym}) ...")
+              print(f"Téléchargement {sym} (Binance: {binance_sym}) depuis {dl_start} ...")
               try:
-                  df, src = dc.load(binance_sym, "5m", "2021-01-01", source="auto", use_cache=False)
+                  df, src = dc.load(binance_sym, "5m", dl_start, source="auto", use_cache=False)
                   df.to_csv(f"data/{sym}.csv.gz", index=False, compression="gzip")
                   print(f"  {sym}: {len(df)} bougies depuis {src}")
               except Exception as e:

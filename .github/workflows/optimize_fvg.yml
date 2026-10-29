@@ -1,13 +1,13 @@
-﻿name: Optimisation FVG HTF + MSS (Optuna)
+name: Optimisation FVG HTF + MSS (Optuna)
 
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Paires (EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD)"
-        default: "EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD"
+        description: "Paires (EURUSD,GBPUSD,USDJPY,XAUUSD — USDCHF/Cryptos déconseillés sur FVG)"
+        default: "EURUSD,GBPUSD,USDJPY,XAUUSD"
       crypto:
-        description: "Cryptos FTMO à ajouter (BTCUSD,ETHUSD,XRPUSD... téléchargées automatiquement ; vide = aucune)"
+        description: "Cryptos FTMO à ajouter (déconseillé sur FVG ; vide = aucune)"
         default: ""
       n_trials:
         description: "Nombre d'essais Optuna"
@@ -19,7 +19,7 @@ on:
         description: "Frais par ordre en % (-1 = frais FTMO réels par actif)"
         default: "-1"
       min_trades:
-        description: "Trades visés par paire et par moitié (en dessous le score est réduit)"
+        description: "Trades visés par paire sur les 3 ans de TRAIN (en dessous le score est réduit)"
         default: "25"
       freeze:
         description: "Leviers figés en plus 'k=v;k2=v2' (vide = défauts)"

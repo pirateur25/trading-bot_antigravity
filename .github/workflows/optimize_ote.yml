@@ -1,4 +1,4 @@
-﻿name: Optimisation OTE ZigZag + MSS (Optuna)
+name: Optimisation OTE ZigZag + MSS (Optuna)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
         description: "Frais par ordre en % (-1 = frais FTMO réels par actif)"
         default: "-1"
       min_trades:
-        description: "Trades visés par paire et par moitié (en dessous le score est réduit)"
+        description: "Trades visés par paire sur les 3 ans de TRAIN (en dessous le score est réduit)"
         default: "25"
       freeze:
         description: "Leviers figés en plus 'k=v;k2=v2' (vide = défauts)"
