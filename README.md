@@ -160,3 +160,17 @@ Actions → **Téléchargement données crypto** → Run workflow (spécifie les
 - Levier Swing FTMO : 1:30 forex/or, 1:2 crypto
 - Swaps non modélisés (compte Swing recommandé pour éviter le problème du week-end)
 
+
+---
+
+## 🗺️ Visualiseur de trades (comme celui de Claude)
+
+1. **Une seule fois** (sur ton PC, après avoir mis les données dans `data/`) :
+   `python backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD,BTCUSD --out viewer/viewer.html`
+   -> `viewer/viewer.html` contient déjà toutes les bougies 5m (~2,5 Mo par paire). Ajoute les paires voulues (cryptos incluses) puis garde ce fichier.
+2. À chaque backtest, Telegram envoie **`viewer_trades.json`** (seulement les trades OTE et FVG avec tous leurs niveaux).
+   Ouvre `viewer.html` > bouton « Charger trades » (ou glisse le fichier). Les trades s'accumulent si tu charges plusieurs fichiers.
+
+## 🎛️ Optimiseurs : leviers
+Chaque résumé Telegram liste les leviers **optimisés** et **figés**. Par défaut : zone OTE figée à 0,618–0,786, OTE `side` limité à short/both, FVG `side=both`.
+Workflows : champs `freeze` (`k=v;k2=v2`) et `unfreeze` (`ote_lo,ote_hi`) pour changer ça. Les réglages de référence sont testés en premier et comparés à la fin (train **et** test).
