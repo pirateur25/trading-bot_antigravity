@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>Visualiseur trades OTE + FVG</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#131722;--fg:#e6e6e6;--mut:#9aa4b2;--bd:#2b3140;--pn:#1b2030}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:13px system-ui,sans-serif}
+body{display:flex;flex-direction:column;padding:8px;gap:6px;box-sizing:border-box}
+.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+button,select{background:var(--pn);color:var(--fg);border:1px solid var(--bd);padding:5px 9px;border-radius:6px;font:inherit;cursor:pointer}
+button.on{background:#2962ff;color:#fff;border-color:#2962ff}
+label{display:flex;gap:3px;align-items:center;color:var(--mut)}
+#chart{flex:1;min-height:320px;border:1px solid var(--bd)}
+#info{color:var(--mut);min-height:2.6em;white-space:pre-wrap}
+#leg{color:var(--mut);font-size:12px}
+#drop{position:fixed;inset:0;background:rgba(41,98,255,.25);display:none;align-items:center;justify-content:center;font-size:22px;z-index:9}
+</style></head><body>
+<div class="bar"><button id="load" style="background:#2962ff;border-color:#2962ff">📂 Charger trades (JSON)</button><input type="file" id="file" accept=".json" multiple hidden>
+<select id="strat"><option value="">Toutes stratégies</option><option>FVG</option><option>OTE</option></select>
+<select id="pair"></select><button id="prev">◀</button><select id="sel"></select><button id="next">▶</button><span id="tfs"></span></div>
+<div class="bar" id="opts"><label><input type="checkbox" id="cZ" checked>Zones (FVG HTF / OTE / Fib)</label><label><input type="checkbox" id="cM" checked>Structure (MSS, jambe)</label><label><input type="checkbox" id="cF" checked>FVG d'entrée</label><label><input type="checkbox" id="cB" checked>BE</label>
+<label>contexte avant <select id="ctx"><option value="3">3 j</option><option value="7">7 j</option><option value="14" selected>14 j</option><option value="30">30 j</option></select></label>
+<span id="leg">FVG : violet = zone HTF · orange = MSS · jaune = FVG d'entrée — OTE : bleu = range Fib · violet = zone OTE · orange = jambe/MSS — vert/rouge = TP/SL</span></div>
+<div id="info">Clique sur « Charger trades » (ou glisse ici le fichier viewer_trades.json reçu sur Telegram).</div>
+<div id="chart"></div><div id="drop">Dépose le fichier viewer_trades.json</div>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+if(typeof LightweightCharts==='undefined'){document.getElementById('info').textContent='Erreur : librairie de graphiques non chargée (CDN bloqué / hors-ligne).';throw 0}
+const PAIRS=/*PAIRS*/;
+const $=id=>document.getElementById(id);
+const chart=LightweightCharts.createChart($('chart'),{autoSize:true,layout:{background:{color:'#131722'},textColor:'#ddd'},
+  grid:{vertLines:{color:'#1e222d'},horzLines:{color:'#1e222d'}},timeScale:{timeVisible:true,secondsVisible:false,rightOffset:5}});
+const cs=chart.addCandlestickSeries({priceFormat:{type:'price',precision:5,minMove:0.00001}});
+class Boxes{constructor(){this.b=[]}attached(p){this.c=p.chart;this.u=p.requestUpdate;this.s=p.series}detached(){}updateAllViews(){}
+ set(b){this.b=b;this.u&&this.u()}
+ paneViews(){const me=this;return[{zOrder:()=>'bottom',renderer:()=>({draw(t){t.useBitmapCoordinateSpace(({context:x,horizontalPixelRatio:h,verticalPixelRatio:v})=>{
+  const ts=me.c.timeScale();for(const b of me.b){const x1=ts.timeToCoordinate(b.t1),x2=ts.timeToCoordinate(b.t2),y1=me.s.priceToCoordinate(b.p1),y2=me.s.priceToCoordinate(b.p2);
+  if(x1==null||x2==null||y1==null||y2==null)continue;x.fillStyle=b.c;x.fillRect(Math.min(x1,x2)*h,Math.min(y1,y2)*v,Math.abs(x2-x1)*h,Math.abs(y2-y1)*v)}})}})}]}}
+const boxes=new Boxes();cs.attachPrimitive(boxes);
+const TFS={'5m':300,'15m':900,'30m':1800,'1h':3600,'4h':14400};let tf=900,BARS=[],curPair=null,CTX=14,TRADES=[],LIST=[],extra=[];
+const tfsEl=$('tfs');
+for(const k in TFS){const b=document.createElement('button');b.textContent=k;b.dataset.s=TFS[k];b.onclick=()=>{tf=TFS[k];show()};tfsEl.appendChild(b)}
+const D=d=>d?new Date(d*1000).toISOString().slice(0,16).replace('T',' '):'-';
+// ---------- chargement des trades
+function addTrades(js,name){const a=Array.isArray(js)?js:js.trades;if(!a)throw new Error('format inconnu');
+ const seen=new Set(TRADES.map(t=>t.sym+t.strat+t.te));let n=0;for(const t of a){const k=t.sym+t.strat+t.te;if(!seen.has(k)){TRADES.push(t);seen.add(k);n++}}
+ TRADES.sort((p,q)=>p.te-q.te);refresh();$('info').textContent=`${n} trades ajoutés depuis ${name} (total ${TRADES.length}).`}
+async function readFiles(fl){for(const f of fl){try{addTrades(JSON.parse(await f.text()),f.name)}catch(e){$('info').textContent='Fichier illisible : '+e.message}}}
+$('load').onclick=()=>$('file').click();$('file').onchange=e=>readFiles(e.target.files);
+addEventListener('dragover',e=>{e.preventDefault();$('drop').style.display='flex'});addEventListener('dragleave',e=>{if(!e.relatedTarget)$('drop').style.display='none'});
+addEventListener('drop',e=>{e.preventDefault();$('drop').style.display='none';readFiles(e.dataTransfer.files)});
+function refresh(){const st=$('strat').value;const f=TRADES.filter(t=>!st||t.strat===st);const names=[...new Set(f.map(t=>t.sym))].sort();
+ const keep=$('pair').value;$('pair').innerHTML=names.map(n=>`<option value="${n}">${n} (${f.filter(t=>t.sym===n).length})</option>`).join('');if(names.includes(keep))$('pair').value=keep;
+ fillSel()}
+function fillSel(){const st=$('strat').value,p=$('pair').value;LIST=TRADES.filter(t=>t.sym===p&&(!st||t.strat===st));
+ $('sel').innerHTML=LIST.map((x,j)=>`<option value="${j}">#${j+1} ${x.strat} ${D(x.te)} ${x.side==='short'?'▼':'▲'} ${x.reason} ${x.r>0?'+':''}${x.r.toFixed(2)}R</option>`).join('');
+ loadPair(p).then(show)}
+async function loadPair(name){const p=PAIRS.find(q=>q.name===name);if(!p){BARS=[];curPair=null;return}
+ if(!p.bars){const bin=Uint8Array.from(atob(p.b64),c=>c.charCodeAt(0));
+  const txt=await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  const segs=JSON.parse(txt),B=[];for(const s of segs){let t=s[0]*300,pc=s[1],k=2;while(k<s.length){t+=s[k]*300;const o=pc+s[k+1],h=o+s[k+2],l=o-s[k+3],c=o+s[k+4];B.push([t,o/p.div,h/p.div,l/p.div,c/p.div]);pc=c;k+=5}}p.bars=B}
+ BARS=p.bars;curPair=p;const pr=Math.round(Math.log10(p.div));cs.applyOptions({priceFormat:{type:'price',precision:pr,minMove:1/p.div}})}
+$('strat').onchange=refresh;$('pair').onchange=fillSel;$('sel').onchange=show;
+$('prev').onclick=()=>{if($('sel').selectedIndex>0){$('sel').selectedIndex--;show()}};$('next').onclick=()=>{if($('sel').selectedIndex<LIST.length-1){$('sel').selectedIndex++;show()}};
+['cZ','cM','cF','cB'].forEach(i=>$(i).onchange=show);$('ctx').onchange=()=>{CTX=+$('ctx').value;show()};
+const snap=t=>Math.floor(t/tf)*tf;
+function resample(a,b){const out=[];let c=null;for(const r of BARS){if(r[0]<a||r[0]>b)continue;const k=snap(r[0]);
+ if(c&&c.time===k){c.high=Math.max(c.high,r[2]);c.low=Math.min(c.low,r[3]);c.close=r[4]}else{c={time:k,open:r[1],high:r[2],low:r[3],close:r[4]};out.push(c)}}return out}
+function line(t1,t2,p,col,w,st,title){if(p==null||t1==null)return;t1=snap(t1);t2=snap(t2);if(!(t1<t2))t2=t1+tf;
+ const s=chart.addLineSeries({color:col,lineWidth:w,lineStyle:st,priceLineVisible:false,lastValueVisible:!!title,title:title||'',crosshairMarkerVisible:false});
+ s.setData([{time:t1,value:p},{time:t2,value:p}]);extra.push(s)}
+function seg(t1,p1,t2,p2,col){if(t1==null||t2==null||p1==null||p2==null)return;t1=snap(t1);t2=snap(t2);if(t1===t2)return;if(t1>t2){[t1,t2]=[t2,t1];[p1,p2]=[p2,p1]}
+ const s=chart.addLineSeries({color:col,lineWidth:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+ s.setData([{time:t1,value:p1},{time:t2,value:p2}]);extra.push(s)}
+function show(){[...tfsEl.children].forEach(b=>b.classList.toggle('on',+b.dataset.s===tf));
+ const x=LIST[+$('sel').value];extra.forEach(s=>chart.removeSeries(s));extra=[];
+ if(!x){cs.setData([]);boxes.set([]);cs.setMarkers([]);if(TRADES.length)$('info').textContent=curPair?'Aucun trade pour ce filtre.':'Bougies de cette paire absentes du visualiseur (relance « viewer_export.py build » avec la paire).';return}
+ if(!curPair){cs.setData([]);boxes.set([]);cs.setMarkers([]);$('info').textContent=`Pas de bougies installées pour ${x.sym} : relance viewer_export.py build --symbols ...,${x.sym}`;return}
+ const short=x.side==='short',ote=x.strat==='OTE';
+ const starts=ote?[x.rlt,x.rht,x.llt,x.lht,x.bt,x.ts]:[x.h1t,x.ft1,x.ts,Math.max(x.zt||0,x.ts-CTX*86400)];
+ const left=Math.min(...starts.filter(v=>v!=null),x.te),t0=Math.max(left,x.ts-CTX*86400*(ote?1:99))-6*3600,t1=x.tx+6*3600;
+ const data=resample(t0-86400,t1+86400);cs.setData(data);const first=data.length?data[0].time:snap(t0);const bx=[];
+ bx.push({t1:snap(x.te),t2:snap(x.tx),p1:x.entry,p2:x.tp,c:'rgba(38,166,154,0.22)'});bx.push({t1:snap(x.te),t2:snap(x.tx),p1:x.entry,p2:x.sl,c:'rgba(239,83,80,0.22)'});
+ const mk=[];
+ if(!ote){
+  if($('cZ').checked&&x.zlo!=null){const zt=Math.max(snap(x.zt),first);bx.push({t1:zt,t2:snap(x.tx),p1:x.zlo,p2:x.zhi,c:'rgba(124,77,255,0.16)'});line(zt,x.tx,x.zlo,'#7c4dff',1,2);line(zt,x.tx,x.zhi,'#7c4dff',1,2,'Zone HTF')}
+  if($('cF').checked&&x.fl!=null)bx.push({t1:snap(x.ft1),t2:snap(x.tx),p1:x.fl,p2:x.fh,c:'rgba(224,168,0,0.25)'});
+  if($('cM').checked){seg(x.h1t,x.h1p,x.h2t,x.h2p,'#ff9800');line(x.l2t,x.ts,x.l2p,'#ff9800',1,2,'L2 cassé');line(x.h2t,x.ts,x.h2p,'#ff9800',1,3,'H2')}
+  const up=short?'aboveBar':'belowBar',dn=short?'belowBar':'aboveBar';
+  mk.push({time:snap(x.h1t),position:up,color:'#ff9800',shape:'circle',text:'H1'},{time:snap(x.h2t),position:up,color:'#ff9800',shape:'circle',text:'H2'},{time:snap(x.ts),position:dn,color:'#ff9800',shape:short?'arrowDown':'arrowUp',text:'MSS'});
+ }else{
+  const rs=Math.max(snap(x.rlt||x.rht||x.ts),first);
+  if($('cZ').checked){
+   if(x.rh!=null&&x.rl!=null){bx.push({t1:rs,t2:snap(x.tx),p1:x.rl,p2:x.rh,c:'rgba(41,98,255,0.09)'});line(rs,x.tx,x.rh,'#5c7cfa',1,2,'Fib 100%');line(rs,x.tx,x.rl,'#5c7cfa',1,2,'Fib 0%')}
+   if(x.ozl!=null){bx.push({t1:rs,t2:snap(x.tx),p1:x.ozl,p2:x.ozh,c:'rgba(124,77,255,0.20)'});line(rs,x.tx,x.ozl,'#7c4dff',1,2);line(rs,x.tx,x.ozh,'#7c4dff',1,2,'Zone OTE')}}
+  if($('cM').checked){seg(x.llt,x.ll,x.lht,x.lh,'#ff9800');line(x.ts-12*tf,x.ts,x.mo,'#ff9800',1,2,'MSS origine');line(x.ts-12*tf,x.ts,x.m2,'#ff9800',1,3,'MSS sommet')}
+  const up=short?'aboveBar':'belowBar',dn=short?'belowBar':'aboveBar';
+  if(x.lht)mk.push({time:snap(x.lht),position:up,color:'#ff9800',shape:'circle',text:'pic'});if(x.llt)mk.push({time:snap(x.llt),position:dn,color:'#ff9800',shape:'circle',text:'creux'});
+  if(x.bt)mk.push({time:snap(x.bt),position:up,color:'#e0a800',shape:'circle',text:'BULLE'});mk.push({time:snap(x.ts),position:dn,color:'#ff9800',shape:short?'arrowDown':'arrowUp',text:'signal'});
+ }
+ boxes.set(bx);
+ line(x.te,x.tx,x.entry,'#2962ff',2,0,'ENTRÉE');line(x.te,x.tx,x.sl,'#ef5350',1,0,'SL');line(x.te,x.tx,x.tp,'#26a69a',1,0,'TP');
+ if($('cB').checked&&x.be>0&&x.be<999){const r=Math.abs(x.sl-x.entry);line(x.te,x.tx,short?x.entry-x.be*r:x.entry+x.be*r,'#999',1,3,'BE '+x.be+'R')}
+ const win=x.pnl>0,up2=short?'aboveBar':'belowBar',dn2=short?'belowBar':'aboveBar';
+ mk.push({time:snap(x.te),position:up2,color:'#2962ff',shape:short?'arrowDown':'arrowUp',text:short?'SHORT':'LONG'},{time:snap(x.tx),position:dn2,color:win?'#26a69a':'#ef5350',shape:'circle',text:x.reason+' '+x.r.toFixed(2)+'R'});
+ mk.sort((a,b)=>a.time-b.time);cs.setMarkers(mk);
+ const pad=Math.max(3*3600,40*tf);chart.timeScale().setVisibleRange({from:snap(Math.max(left,x.ts-CTX*86400))-pad,to:snap(x.tx)+pad});
+ $('info').textContent=`${x.sym} #${+$('sel').value+1} ${x.strat} ${x.side.toUpperCase()} (${x.tf}) | entrée ${x.entry.toPrecision(7)} | SL ${x.sl.toPrecision(7)} | TP ${x.tp.toPrecision(7)} | sortie ${x.exit.toPrecision(7)} (${x.reason}) | ${x.r.toFixed(2)}R\nSignal ${D(x.ts)} · fill ${D(x.te)} · sortie ${D(x.tx)} UTC`}
+</script></body></html>
+
