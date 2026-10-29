@@ -1,4 +1,4 @@
-name: Optimisation FVG HTF + MSS (Optuna)
+﻿name: Optimisation FVG HTF + MSS (Optuna)
 
 on:
   workflow_dispatch:
@@ -6,18 +6,27 @@ on:
       symbols:
         description: "Paires (EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD)"
         default: "EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD"
+      crypto:
+        description: "Cryptos FTMO à ajouter (BTCUSD,ETHUSD,XRPUSD... téléchargées automatiquement ; vide = aucune)"
+        default: ""
       n_trials:
-        description: "Nombre de trials Optuna"
+        description: "Nombre d'essais Optuna"
         default: "300"
       split:
-        description: "Début de la période TEST (jamais utilisée)"
+        description: "Début de la période TEST (jamais utilisée pour choisir)"
         default: "2024-01-01"
       fee:
-        description: "Coût par ordre (%)"
-        default: "0.005"
+        description: "Frais par ordre en % (-1 = frais FTMO réels par actif)"
+        default: "-1"
       min_trades:
-        description: "Trades minimum par paire par moitié (sinon score = -3)"
-        default: "15"
+        description: "Trades visés par paire et par moitié (en dessous le score est réduit)"
+        default: "25"
+      freeze:
+        description: "Leviers figés en plus 'k=v;k2=v2' (vide = défauts)"
+        default: ""
+      unfreeze:
+        description: "Leviers à libérer, séparés par des virgules (ex: side pour tester long/short seul)"
+        default: ""
       wall_time:
         description: "Durée max en minutes (max GitHub = 340)"
         default: "320"
@@ -31,52 +40,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Installation des dépendances
-        run: pip install -r requirements.txt
-
+      - run: pip install -r requirements.txt
       - name: Compilation du noyau C
         run: gcc -O3 -march=native -shared -fPIC -o backtest/_kernels.so backtest/kernels.c -lm
-
       - name: Création du dossier résultats
-        run: mkdir -p results_opt   # FIX: créé AVANT l'optimisation
-
-      - name: Optimisation Optuna FVG
-        run: |
-          python backtest/optimize_fvg.py \
-            --symbols "${{ inputs.symbols }}" \
-            --n_trials "${{ inputs.n_trials }}" \
-            --split "${{ inputs.split }}" \
-            --fee "${{ inputs.fee }}" \
-            --min_trades "${{ inputs.min_trades }}" \
-            --wall_time "${{ inputs.wall_time }}" \
-            --outdir results_opt 2>&1 | tee results_opt/log_fvg.txt
-
-      - name: Envoi Telegram de la meilleure config
+        run: mkdir -p results_opt
+      - name: Optimisation (choix sur TRAIN, jugement sur TEST) + envoi Telegram du résumé et du JSON
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          python - <<'EOF'
-          import os, json, requests
-          token, chat = os.environ.get("BOT_TOKEN"), os.environ.get("CHAT_ID")
-          if not token or not chat:
-              print("Pas de token Telegram")
-              exit(0)
-          f = "results_opt/best_params_fvg.json"
-          if os.path.exists(f):
-              p = json.load(open(f))
-              msg = "✅ Optuna FVG terminé\n" + "\n".join(f"  {k} = {v}" for k, v in p.items())
-              requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": chat, "text": msg[:4000]}, timeout=20)
-              with open(f, "rb") as ff:
-                  requests.post(f"https://api.telegram.org/bot{token}/sendDocument",
-                                data={"chat_id": chat}, files={"document": ff}, timeout=30)
-          EOF
-
-      - name: Sauvegarde des résultats
+          python backtest/optimize_fvg.py \
+            --symbols "${{ inputs.symbols }}${{ inputs.crypto && ',' || '' }}${{ inputs.crypto }}" --n_trials "${{ inputs.n_trials }}" --split "${{ inputs.split }}" \
+            --fee "${{ inputs.fee }}" --min_trades "${{ inputs.min_trades }}" --wall_time "${{ inputs.wall_time }}" \
+            --freeze "${{ inputs.freeze }}" --unfreeze "${{ inputs.unfreeze }}" \
+            --outdir results_opt 2>&1 | tee results_opt/log.txt
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: optimisation-fvg
           path: results_opt/
