@@ -26,6 +26,7 @@ import realism  # noqa: E402
 import sim_challenge as sim_ch  # noqa: E402
 import strategy_fvg  # noqa: E402
 import strategy_ote  # noqa: E402
+import viewer_export as ve  # noqa: E402
 
 CAPITAL = 10000.0
 
@@ -170,6 +171,7 @@ def main():
     todo = [("FVG", a.risk_fvg, run_fvg, p_fvg)] if a.mode == "fvg_only" else [("OTE", a.risk_ote, run_ote, p_ote)] if a.mode == "ote_only" \
         else [("FVG", a.risk_fvg, run_fvg, p_fvg), ("OTE", a.risk_ote, run_ote, p_ote)]
     allt = {"FVG": [], "OTE": []}
+    viewer_trades = []
     recap = []
     for sym in forex + crypto:
         try:
@@ -201,6 +203,7 @@ def main():
                     tg(txt, photo=png)
                     tg(document=csv)
                     allt[name].append(tr)
+                    viewer_trades += ve.trades_to_json(tr, name, sym, p.get("be_rr", 0))
                 else:
                     tg(txt + "\n⚠️ Aucun trade.")
             except Exception as e:
@@ -209,6 +212,9 @@ def main():
                 tg(msg)
                 recap.append(f"{sym} {name}: erreur")
 
+    if viewer_trades:
+        vp = ve.write_trades_json(viewer_trades, os.path.join(a.outdir, "viewer_trades.json"))
+        tg("🗺️ viewer_trades.json : ouvre ton visualiseur (viewer/viewer.html) > « Charger trades » (ou glisse le fichier). Seuls les trades sont dans ce fichier, les bougies sont déjà dans le visualiseur.", document=vp)
     tg("📋 RÉCAP\n" + "\n".join(recap))
     print("\n".join(recap))
     dfs = {k: (pd.concat(v, ignore_index=True) if v else pd.DataFrame()) for k, v in allt.items()}
@@ -240,4 +246,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
