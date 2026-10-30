@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Paires (EURUSD,GBPUSD,USDJPY,XAUUSD — USDCHF/Cryptos déconseillés sur FVG)"
-        default: "EURUSD,GBPUSD,USDJPY,XAUUSD"
+        description: "Paires (EURUSD,GBPUSD,USDJPY)"
+        default: "EURUSD,GBPUSD,USDJPY"
       crypto:
         description: "Cryptos FTMO à ajouter (déconseillé sur FVG ; vide = aucune)"
         default: ""
@@ -13,14 +13,14 @@ on:
         description: "Nombre d'essais Optuna"
         default: "300"
       split:
-        description: "Début de la période TEST (jamais utilisée pour choisir)"
-        default: "2024-01-01"
+        description: "Début de la période TEST hors-échantillon (TRAIN = 2015 -> split, découpé en 3 plis WFA)"
+        default: "2023-01-01"
       fee:
         description: "Frais par ordre en % (-1 = frais FTMO réels par actif)"
         default: "-1"
       min_trades:
-        description: "Trades visés par paire sur les 3 ans de TRAIN (en dessous le score est réduit)"
-        default: "25"
+        description: "Trades visés par paire sur la période TRAIN (en dessous le score est réduit)"
+        default: "60"
       freeze:
         description: "Leviers figés en plus 'k=v;k2=v2' (vide = défauts)"
         default: ""

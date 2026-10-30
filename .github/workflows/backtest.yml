@@ -11,7 +11,7 @@ on:
         default: ""
       start:
         description: "Date de début (AAAA-MM-JJ)"
-        default: "2021-01-04"
+        default: "2015-01-01"
       end:
         description: "Date de fin (vide = fin des données)"
         default: ""
