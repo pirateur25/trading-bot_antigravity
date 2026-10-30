@@ -1,0 +1,4 @@
+🎯 Simulation FTMO 1phase (départs tous les 3 j, pire cas intra-trade)
+[OTE 0.5% + FVG 0.75%] réussite 70% | échec DD jour 0% / DD total 26% | non finis 5% | durée médiane 25 j | N=1416
+[OTE 0.375% + FVG 0.5625%] réussite 84% | échec DD jour 0% / DD total 10% | non finis 6% | durée médiane 52 j | N=1416
+[OTE 0.75% + FVG 1.125%] réussite 58% | échec DD jour 0% / DD total 38% | non finis 4% | durée médiane 13 j | N=1416
