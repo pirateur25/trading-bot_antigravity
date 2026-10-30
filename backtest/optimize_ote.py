@@ -166,9 +166,8 @@ class EvaluatorOTE:
         # est automatiquement découpée en 3 sous-périodes Walk-Forward équilibrées (f1, f2, f3).
         self.t = {}
         for s in symbols:
-            t0_ns = int(self.P[s].base["open_ns"][0])
-            warm_ts = pd.Timestamp(t0_ns, tz="UTC") + pd.Timedelta(days=180)
-            i_start = self.P[s].idx_at(warm_ts)
+            open_ns = self.P[s].base["open_ns"]
+            i_start = int(len(open_ns) and (open_ns < open_ns[0] + 180 * 86400 * 10**9).sum())
             i_split = self.P[s].idx_at(split)
             span = max(3, i_split - i_start)
             self.t[s] = dict(

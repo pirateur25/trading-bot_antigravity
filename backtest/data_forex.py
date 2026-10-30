@@ -58,7 +58,9 @@ class PairData:
         self.hour = hours.astype(np.int16)
 
     def idx_at(self, ts):
-        return int(np.searchsorted(self.base["open_ns"], pd.Timestamp(ts, tz="UTC").value, side="left"))
+        t = pd.Timestamp(ts)
+        t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+        return int(np.searchsorted(self.base["open_ns"], t.value, side="left"))
 
     def trend_state(self, tf, length):
         """+1 si la dernière clôture TF est au-dessus de l'EMA, -1 si en dessous (par bougie de base, sans regarder le futur)."""
