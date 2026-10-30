@@ -50,6 +50,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          set -o pipefail
           python backtest/optimize_ote.py \
             --symbols "${{ inputs.symbols }}${{ inputs.crypto && ',' || '' }}${{ inputs.crypto }}" --n_trials "${{ inputs.n_trials }}" --split "${{ inputs.split }}" \
             --fee "${{ inputs.fee }}" --min_trades "${{ inputs.min_trades }}" --wall_time "${{ inputs.wall_time }}" \
