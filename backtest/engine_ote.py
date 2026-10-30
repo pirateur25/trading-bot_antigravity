@@ -45,7 +45,7 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
         net = gross - pos["entry_fee"] - exit_fee
         trades.append({
             "entry_time": pos["entry_time"], "exit_time": times.iloc[i], "side": pos["side"],
-            "entry": pos["entry"], "exit": price, "sl": pos["sl"], "tp": pos["tp"], "qty": pos["qty"],
+            "entry": pos["entry"], "exit": price, "sl": pos["init_sl"], "tp": pos["tp"], "qty": pos["qty"],
             "bars": i - pos["entry_i"], "reason": reason, "setup": pos["meta"], "be_done": pos["be_done"],
             "fees": pos["entry_fee"] + exit_fee, "pnl": net,
             "r": net / pos["risk_amount"] if pos["risk_amount"] > 0 else 0.0,
@@ -66,9 +66,12 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
             tp = sig.get("tp")
             risk_dist = abs(entry - sl)
             if tp is None and sig.get("rr") is not None and risk_dist > 0:
-                tp = entry + sig["rr"] * risk_dist if side == "long" else entry - sig["rr"] * risk_dist
+                rr_val = min(float(sig["rr"]), 8.0)
+                tp = entry + rr_val * risk_dist if side == "long" else entry - rr_val * risk_dist
             valid = risk_dist > 0 and ((side == "long" and sl < entry) or (side == "short" and sl > entry))
             if valid and tp is not None:
+                if abs(tp - entry) > 8.0 * risk_dist:
+                    tp = entry + 8.0 * risk_dist if side == "long" else entry - 8.0 * risk_dist
                 valid = (side == "long" and tp > entry) or (side == "short" and tp < entry)
             if valid and (side == "long" or allow_short):
                 # Taille calculée pour que la perte AU STOP, frais et glissement compris, soit exactement 1 R.
@@ -86,7 +89,7 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
             if not continue_flag:
                 entry_fee = qty * entry * fee
                 balance -= entry_fee
-                pos = {"side": side, "entry": entry, "sl": sl, "tp": tp, "qty": qty, "entry_i": i,
+                pos = {"side": side, "entry": entry, "sl": sl, "init_sl": sl, "tp": tp, "qty": qty, "entry_i": i,
                        "entry_time": times.iloc[i], "entry_fee": entry_fee, "risk_amount": risk_cash, "risk_dist": risk_dist, "be_done": False,
                        "meta": sig.get("meta", ""), "info": sig.get("info") or {}}
 

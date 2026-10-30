@@ -35,7 +35,7 @@ PARAMS = {
     "tp_mode": "rr",         # "rr" (TP fixe) ou "fvg" (prochain FVG HTF non mitigé)
     "rr": 2.0,
     "min_rr": 1.0,           # mode fvg : RR minimum de la cible
-    "max_rr": 1e9,           # mode fvg : plafond de RR
+    "max_rr": 8.0,           # plafond strict de RR (1:8 maximum)
     "tp_edge": 0.0,          # mode fvg : 0 = bord proche du FVG cible, 1 = bord lointain
     "be_rr": 0.0,            # break-even à X R (0 = désactivé)
     "ttl": 96,               # un ordre limite non rempli est annulé après N bougies de 5m (0 = jamais)

@@ -40,8 +40,8 @@ SPACE = {
     "zz_atr_1h": ("cat", [1.5, 2.5, 3.5, 4.5]),
     "range_origin": ("cat", ["leg", "pivot"]),
     "leg_lookback": ("cat", [100, 300, 600]),
-    "ote_lo": ("cat", [0.60, 0.618, 0.65, 0.70]),
-    "ote_hi": ("cat", [0.75, 0.786, 0.80, 0.85]),
+    "ote_lo": ("cat", [0.618]),
+    "ote_hi": ("cat", [0.706]),
     "ote_react": ("cat", [0, 1]),
     "ote_react_level": ("cat", [0.382, 0.5]),
     "mss_fractal": ("cat", [2, 3, 4, 6]),
@@ -60,7 +60,7 @@ SPACE = {
 }
 FROZEN_DEFAULT = {
     "ote_lo": 0.618,
-    "ote_hi": 0.786,
+    "ote_hi": 0.706,
     "confirms": "mss",
     "mss_trough_pivot": 0,
     "min_sl_pct": 0.0,
@@ -73,7 +73,7 @@ FROZEN_DEFAULT = {
 REFERENCE = {
     "side": "both", "confirms": "mss", "conf_tfs": "5m", "trend_filter": 0, "trend_tf": "4h", "trend_mode": "ema",
     "zz_atr_trend": 5.0, "ma_len": 200, "range_tfs": "1h", "zz_atr_4h": 3.0, "zz_atr_1h": 1.5,
-    "range_origin": "leg", "leg_lookback": 300, "ote_lo": 0.618, "ote_hi": 0.786, "ote_react": 0,
+    "range_origin": "leg", "leg_lookback": 300, "ote_lo": 0.618, "ote_hi": 0.706, "ote_react": 0,
     "mss_fractal": 2, "mss_speed_ratio": 3.0, "mss_min_sweep_pct": 0.0, "mss_trough_pivot": 0,
     "tp_fib": 1.618, "be_rr": 2.0, "sl_buf_atr": 1.5, "min_sl_pct": 0.0, "min_rr": 1.0,
     "session": "0-24", "session_start": 0, "session_end": 24,

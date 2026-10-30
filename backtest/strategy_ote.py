@@ -47,8 +47,8 @@ PARAMS = {
     "zz_atr_trend": 7.9626,        # ZigZag de la TENDANCE (plus grand = tendance plus lente / plus longue)
     "range_origin": "leg",      # "leg" = le retracement part de l'ORIGINE du mouvement complet ; "pivot" = dernier pivot seulement
     "leg_lookback": 300,        # en "leg" : on remonte au plus de N bougies de l'unité du range
-    "ote_lo": 0.603,
-    "ote_hi": 0.9335,
+    "ote_lo": 0.618,
+    "ote_hi": 0.706,
     "ote_react": 0,             # 1 = un retracement dont la zone OTE a DÉJÀ réagi est invalide ; 0 = règle désactivée
     "ote_react_level": 0.5378,     # niveau (en fraction du range, 0 = bas, 1 = haut) que le prix doit retoucher après la réaction
     # --- confirmations ---
@@ -254,6 +254,9 @@ def _mss_core(h, l, c, o, has_o, k, ratio, trough_pivot, min_sweep_pct):
     o_h2 = np.full(n, np.nan)
     o_h1 = np.full(n, np.nan)
     o_l2 = np.full(n, np.nan)
+    o_h2i = np.full(n, -1, np.int64)
+    o_h1i = np.full(n, -1, np.int64)
+    o_li = np.full(n, -1, np.int64)
     piv_i = np.empty(n, np.int64)
     piv_p = np.empty(n)
     npv = 0
@@ -341,7 +344,10 @@ def _mss_core(h, l, c, o, has_o, k, ratio, trough_pivot, min_sweep_pct):
                 o_h2[t] = h2p
                 o_h1[t] = h1p
                 o_l2[t] = cL
-    return ev, o_h2, o_h1, o_l2
+                o_h2i[t] = h2i
+                o_h1i[t] = h1i
+                o_li[t] = cLi
+    return ev, o_h2, o_h1, o_l2, o_h2i, o_h1i, o_li
 
 
 def mss_events(h, l, c, k, ratio, o=None, trough_pivot=0, min_sweep_pct=0.0):
@@ -491,8 +497,8 @@ def run_world(F, B, jm, p, sign, cache=None):
             if mss_key not in cache:
                 cache[mss_key] = mss_events(vh, vl, vc, p["mss_fractal"], p["mss_speed_ratio"], vo,
                                             p["mss_trough_pivot"], p["mss_min_sweep_pct"])
-            ev, h2, h1m, l2m = cache[mss_key]
-            cands += [(int(j), "mss", h2[j], (h1m[j], h2[j], l2m[j])) for j in np.where(ev)[0] if okY[j]]
+            ev, h2, h1m, l2m, h2i_arr, h1i_arr, li_arr = cache[mss_key]
+            cands += [(int(j), "mss", h2[j], (h1m[j], h2[j], l2m[j], int(h1i_arr[j]), int(h2i_arr[j]), int(li_arr[j]))) for j in np.where(ev)[0] if okY[j]]
             if not quiet:
                 _d("mss_brut", "0 événements MSS " + Y)
         cands.sort(key=lambda x: x[0])
@@ -535,9 +541,7 @@ def run_world(F, B, jm, p, sign, cache=None):
                     if kind == "bubble" or mssp is None:
                         cj = j - 1
                     else:
-                        w0 = max(0, j - 3000)
-                        hit = np.where(vh[w0:j] == mssp[0])[0]
-                        cj = w0 + int(hit[-1]) if len(hit) else j - 1
+                        cj = mssp[3] if mssp[3] >= 0 else j - 1
                     cut = int(np.searchsorted(B["open_ns"], V["open_ns"][max(cj, 0)], side="left"))
                     H, hi_b, L, bL2, dead, nrec = _range_sm(bh, bl, bL, cut, float(H), hi_b, p["ote_lo"], p["ote_react_level"])
                     if dead:
@@ -551,14 +555,18 @@ def run_world(F, B, jm, p, sign, cache=None):
                     bL = bL2
                 zl, zh = L + p["ote_lo"] * (H - L), L + p["ote_hi"] * (H - L)
                 if kind == "bubble":
-                    if not (max(vh[j - 1], vh[j]) >= zl and min(vl[j - 1], vl[j]) <= zh):
+                    if not (zl <= max(vh[j - 1], vh[j]) <= zh and min(vl[j - 1], vl[j]) <= zh):
                         if not quiet:
                             _d(kind, "3 hors zone OTE")
                         continue
-                elif not (zl <= sweep <= H):
-                    if not quiet:
-                        _d(kind, "3 hors zone OTE")
-                    continue
+                else:
+                    h2_idx = mssp[4]
+                    # 1) H2 (mèche comprise = vh[h2_idx]) <= zh (ligne des 0.706)
+                    # 2) Intersection entre la bougie de H2 [vl[h2_idx], vh[h2_idx]] et la zone OTE [zl, zh] non vide
+                    if h2_idx < 0 or not (zl <= sweep <= zh and vl[h2_idx] <= zh):
+                        if not quiet:
+                            _d(kind, "3 hors zone OTE")
+                        continue
                 after_l, after_h = bl[bL + 1:i + 1], bh[bL + 1:i + 1]
                 if len(after_h) == 0 or after_l.min() < bl[bL]:  # nouveau plus bas : la jambe a changé
                     if not quiet:
@@ -568,6 +576,11 @@ def run_world(F, B, jm, p, sign, cache=None):
                 if peak >= H:
                     if not quiet:
                         _d(kind, "6 sommet du range repris")
+                    continue
+                # Le sommet H2 doit être l'extrême absolu depuis le point d'ancrage du retracement Fibonacci (bL)
+                if kind == "mss" and abs(sweep - peak) > 1e-9:
+                    if not quiet:
+                        _d(kind, "5 H2 n'est pas l'extrême du retracement Fib")
                     continue
                 atr = V["atr"][j]
                 if atr != atr:
@@ -579,6 +592,9 @@ def run_world(F, B, jm, p, sign, cache=None):
                     if not quiet:
                         _d(kind, "7 entrée déjà sous le TP")
                     continue
+                # Plafond strict du RR à 1:8 quoiqu'il arrive
+                if (entry - tp) > 8.0 * (sl - entry):
+                    tp = entry - 8.0 * (sl - entry)
                 if p["min_sl_pct"] and (sl - entry) / abs(entry) * 100 < p["min_sl_pct"]:
                     if not quiet:
                         _d(kind, "8 stop plus serré que min_sl_pct")
@@ -595,6 +611,8 @@ def run_world(F, B, jm, p, sign, cache=None):
                     # ---- infos détaillées du trade (prix réels, pas en miroir)
                     def ts(ix):
                         return pd.Timestamp(int(B["open_ns"][ix]), tz="UTC").strftime("%Y-%m-%d %H:%M") if ix >= 0 else ""
+                    def ts_v(ix):
+                        return pd.Timestamp(int(V["open_ns"][ix]), tz="UTC").strftime("%Y-%m-%d %H:%M") if ix >= 0 else ""
                     k_pk = bL + 1 + int(np.argmax(after_h))
                     pts = sorted([(sign * H, ts(hi_b)), (sign * L, ts(bL))], key=lambda x: x[0])
                     leg = sorted([(sign * peak, ts(k_pk)), (sign * bl[bL], ts(bL))], key=lambda x: x[0])
@@ -627,7 +645,8 @@ def run_world(F, B, jm, p, sign, cache=None):
                                      "bubble_dist_pct": abs(edge - band) / edge * 100})
                     if mssp is not None:
                         info.update({"mss_first_extreme": sign * mssp[0], "mss_second_extreme": sign * mssp[1],
-                                     "mss_origin_level": sign * mssp[2]})
+                                     "mss_origin_level": sign * mssp[2],
+                                     "h1_time": ts_v(mssp[3]), "h2_time": ts_v(mssp[4]), "l2_time": ts_v(mssp[5])})
                 out.append((i, sign * sl, sign * tp, f"{kind}{Y}|{R}", info))
                 break
     return out, float(bear.mean())
@@ -639,7 +658,8 @@ def prepare(df):
     open_ns = pd.DatetimeIndex(df["time"]).as_unit("ns").asi8
     base_min = int(round(np.median(np.diff(open_ns)) / NS_MIN))
     nb = len(df)
-    df_key = (nb, int(open_ns[0]), int(open_ns[-1]), base_min)
+    c_arr = df["close"].to_numpy(float)
+    df_key = (nb, int(open_ns[0]), int(open_ns[-1]), base_min, float(c_arr[0]), float(c_arr[-1]), float(c_arr[nb // 2]))
     if df_key not in _DF_CACHE:
         if len(_DF_CACHE) >= 16:
             _DF_CACHE.clear()
