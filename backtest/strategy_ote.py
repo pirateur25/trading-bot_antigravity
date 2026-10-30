@@ -64,8 +64,13 @@ PARAMS = {
     "mss_fractal": 4,           # un creux/sommet est confirmé après N bougies de chaque côté
     "mss_trough_pivot": 1,      # 0 = le creux L2 est simplement le plus bas entre H1 et H2 ; 1 = il doit aussi être confirmé sur N bougies
     "mss_min_sweep_pct": 0.0307,   # H2 doit dépasser H1 d'au moins ce % (0 = n'importe quel dépassement)
-    "min_sl_pct": 0.8,          # distance minimale du stop en % du prix d'entrée (0 = pas de minimum)
-    "mss_speed_ratio": 2.6765,     # cassure en <= ratio x (durée de la montée du sweep)
+    "min_sl_pct": 0.0,          # distance minimale du stop en % du prix d'entrée (0 = pas de minimum)
+    "mss_speed_ratio": 1.5,     # cassure en <= ratio x (durée de la montée du sweep)
+    "max_time_ratio": 0.0,      # ratio max (durée impulsion Fib / durée retracement vers MSS) ; 0 = désactivé
+    "entry_mode": "fvg_15m",    # "mss" (clôture MSS) | "fvg_15m" (FVG 15m entre H2 et MSS) | "fvg_15m_or_mss" | "fvg_conf"
+    "entry_lvl": 0.0,           # niveau d'entrée dans la FVG (0.0 = bord proche du MSS, 0.5 = milieu)
+    "fvg_min_atr": 0.0,         # taille minimale de la FVG d'entrée en ATR
+    "ttl": 96,                  # durée de validité de l'ordre limit en bougies 5m (96 = 8h)
     # --- sortie ---
     "sl_buf_atr": 0.3407,          # marge au-dessus du plus haut local, en ATR de l'unité de confirmation
     "tp_fib": 3.0,            # TP = retracement de ce niveau du mouvement de retracement (0.618 à 0.786)
@@ -582,12 +587,59 @@ def run_world(F, B, jm, p, sign, cache=None):
                     if not quiet:
                         _d(kind, "5 H2 n'est pas l'extrême du retracement Fib")
                     continue
+                # Filtre du ratio temporel : durée de l'impulsion Fib (hi_b <-> bL) / durée du retracement (bL -> MSS)
+                t_bL_ns = int(B["open_ns"][bL])
+                t_hi_ns = int(B["open_ns"][hi_b]) if hi_b >= 0 else int(Rf["open_ns"][int(rg["Hi"][jr])])
+                t_imp_ns = abs(t_bL_ns - t_hi_ns)
+                t_ret_ns = max(1, int(B["close_ns"][i]) - t_bL_ns)
+                time_ratio = float(t_imp_ns) / float(t_ret_ns)
+                max_tr = float(p.get("max_time_ratio", 0.0) or 0.0)
+                if max_tr > 0.0 and time_ratio > max_tr:
+                    if not quiet:
+                        _d(kind, "5 ratio temps impulsion/retracement trop grand")
+                    continue
                 atr = V["atr"][j]
                 if atr != atr:
                     continue
                 sl = peak + p["sl_buf_atr"] * atr
                 tp = peak - p["tp_fib"] * (peak - bl[bL])
+                k_pk = bL + 1 + int(np.argmax(after_h))
+                emode = str(p.get("entry_mode", "mss") or "mss")
+                elvl = float(p.get("entry_lvl", 0.0) or 0.0)
+                fmin_atr = float(p.get("fvg_min_atr", 0.0) or 0.0)
+                order_type = "market"
                 entry = vc[j]
+                fvg_lo_w = fvg_hi_w = np.nan
+                fvg_t1_ns = -1
+                if kind == "mss" and emode != "mss":
+                    tf_fvg = "15m" if emode in ("fvg_15m", "fvg_15m_or_mss") and "15m" in F else Y
+                    Ff = F[tf_fvg]
+                    fh_w = Ff["h"] if sign == 1 else -Ff["l"]
+                    fl_w = Ff["l"] if sign == 1 else -Ff["h"]
+                    fatr = Ff["atr"]
+                    jf_end = int(jm[tf_fvg][i])
+                    t_h2_open = int(B["open_ns"][k_pk])
+                    jf_h2 = int(np.searchsorted(Ff["close_ns"], t_h2_open, side="right"))
+                    jf_found = -1
+                    # On cherche la FVG la plus proche du MSS (donc la plus récente entre H2 et le MSS)
+                    for qf in range(jf_end - 2, max(-1, jf_h2 - 1), -1):
+                        if fh_w[qf + 2] < fl_w[qf] and (fl_w[qf] - fh_w[qf + 2]) >= fmin_atr * fatr[min(jf_end, len(fatr) - 1)]:
+                            jf_found = qf
+                            break
+                    if jf_found >= 0:
+                        fvg_lo_w = float(fh_w[jf_found + 2])
+                        fvg_hi_w = float(fl_w[jf_found])
+                        fvg_t1_ns = int(Ff["open_ns"][jf_found])
+                        en_fvg = fvg_lo_w + elvl * (fvg_hi_w - fvg_lo_w)
+                        if en_fvg > vc[j]:
+                            entry = en_fvg
+                            order_type = "limit"
+                        else:
+                            entry = vc[j]
+                    elif emode in ("fvg_15m", "fvg_conf"):
+                        if not quiet:
+                            _d(kind, "6 pas de FVG d'entrée entre H2 et MSS")
+                        continue
                 if not (tp < entry < sl):
                     if not quiet:
                         _d(kind, "7 entrée déjà sous le TP")
@@ -613,7 +665,6 @@ def run_world(F, B, jm, p, sign, cache=None):
                         return pd.Timestamp(int(B["open_ns"][ix]), tz="UTC").strftime("%Y-%m-%d %H:%M") if ix >= 0 else ""
                     def ts_v(ix):
                         return pd.Timestamp(int(V["open_ns"][ix]), tz="UTC").strftime("%Y-%m-%d %H:%M") if ix >= 0 else ""
-                    k_pk = bL + 1 + int(np.argmax(after_h))
                     pts = sorted([(sign * H, ts(hi_b)), (sign * L, ts(bL))], key=lambda x: x[0])
                     leg = sorted([(sign * peak, ts(k_pk)), (sign * bl[bL], ts(bL))], key=lambda x: x[0])
                     z = sorted([sign * zl, sign * zh])
@@ -624,7 +675,11 @@ def run_world(F, B, jm, p, sign, cache=None):
                             "ote_zone_low": z[0], "ote_zone_high": z[1],
                             "fib_leg_high": leg[1][0], "fib_leg_high_time": leg[1][1],
                             "fib_leg_low": leg[0][0], "fib_leg_low_time": leg[0][1], "tp_fib": p["tp_fib"],
-                            "range_recycled": nrec}
+                            "range_recycled": nrec, "time_ratio": round(time_ratio, 3)}
+                    if fvg_t1_ns >= 0:
+                        fz = sorted([sign * fvg_lo_w, sign * fvg_hi_w])
+                        info.update({"fvg_lo": fz[0], "fvg_hi": fz[1],
+                                     "fvg_t1": pd.Timestamp(fvg_t1_ns, tz="UTC").strftime("%Y-%m-%d %H:%M")})
                     jt_ = int(jt)
                     if sign == 1:
                         ph_, ch_, pl_, cl_ = (zzT[k][jt_] for k in ("prev_hi", "cur_hi", "prev_lo", "cur_lo"))
@@ -647,7 +702,7 @@ def run_world(F, B, jm, p, sign, cache=None):
                         info.update({"mss_first_extreme": sign * mssp[0], "mss_second_extreme": sign * mssp[1],
                                      "mss_origin_level": sign * mssp[2],
                                      "h1_time": ts_v(mssp[3]), "h2_time": ts_v(mssp[4]), "l2_time": ts_v(mssp[5])})
-                out.append((i, sign * sl, sign * tp, f"{kind}{Y}|{R}", info))
+                out.append((i, sign * entry, order_type, sign * sl, sign * tp, f"{kind}{Y}|{R}", info))
                 break
     return out, float(bear.mean())
 
@@ -671,7 +726,7 @@ def prepare(df):
     dropped = [tf for tf in _csv(p["conf_tfs"]) if TF_MIN[tf] < base_min]
     if dropped and not quiet:
         print(f"Unité de base {base_min} min : confirmations {', '.join(dropped)} ignorées (trop fines).")
-    need = {p["trend_tf"], *_csv(p["range_tfs"]), *_csv(p["conf_tfs"])}
+    need = {p["trend_tf"], "15m", *_csv(p["range_tfs"]), *_csv(p["conf_tfs"])}
     F = {}
     for tf in need:
         if TF_MIN[tf] >= base_min:
@@ -687,7 +742,7 @@ def prepare(df):
         if p["side"] not in ("both", name):
             continue
         res, share = run_world(F, B, jm, p, sign, cache=entry["cache"])
-        setups += [(i, side, sl, tp, code, info) for i, sl, tp, code, info in res]
+        setups += [(i, side, en, otype, sl, tp, code, info) for i, en, otype, sl, tp, code, info in res]
         if not quiet:
             label = "baissière" if sign == 1 else "haussière"
             print(f"Tendance {p['trend_tf']} {label} ({p['trend_mode']}) : {share * 100:.1f} % du temps | signaux {name} : {len(res)}")
@@ -698,14 +753,19 @@ def prepare(df):
             if rows:
                 print(f"Entonnoir {kind} (les 2 sens) : " + " | ".join(f"{r[2:]} {n}" if r[0] != "0" else f"détectés {n}" for r, n in rows))
     sig_side = np.zeros(nb, dtype=np.int8)
+    sig_entry = np.full(nb, np.nan)
+    sig_otype = np.array([""] * nb, dtype=object)
     sig_sl = np.full(nb, np.nan)
     sig_tp = np.full(nb, np.nan)
     sig_code = np.array([""] * nb, dtype=object)
     sig_info = np.array([None] * nb, dtype=object)
-    for i, side, sl, tp, code, info in sorted(setups, key=lambda x: x[0]):
+    for i, side, en, otype, sl, tp, code, info in sorted(setups, key=lambda x: x[0]):
         if sig_side[i] == 0:
-            sig_side[i], sig_sl[i], sig_tp[i], sig_code[i], sig_info[i] = side, sl, tp, code, info
-    df["sig_side"], df["sig_sl"], df["sig_tp"], df["sig_code"], df["sig_info"] = sig_side, sig_sl, sig_tp, sig_code, sig_info
+            sig_side[i], sig_entry[i], sig_otype[i], sig_sl[i], sig_tp[i], sig_code[i], sig_info[i] = side, en, otype, sl, tp, code, info
+    df["sig_side"], df["sig_entry"], df["sig_otype"], df["sig_sl"], df["sig_tp"], df["sig_code"], df["sig_info"] = (
+        sig_side, sig_entry, sig_otype, sig_sl, sig_tp, sig_code, sig_info
+    )
+    df["sig_ttl"] = int(p.get("ttl", 96) or 0)
     return df
 
 
@@ -713,5 +773,8 @@ def signal(d, i):
     s = d["sig_side"][i]
     if s == 0:
         return None
+    en = d["sig_entry"][i] if "sig_entry" in d and not np.isnan(d["sig_entry"][i]) else d["close"][i]
+    otype = d["sig_otype"][i] if "sig_otype" in d and d["sig_otype"][i] else "market"
+    ttl = int(d["sig_ttl"][i]) if "sig_ttl" in d else 96
     return {"side": "long" if s > 0 else "short", "sl": d["sig_sl"][i], "tp": d["sig_tp"][i], "meta": d["sig_code"][i], "info": d["sig_info"][i],
-            "entry": d["close"][i]}
+            "entry": float(en), "order_type": otype, "ttl": ttl, "sig_i": i}

@@ -55,62 +55,85 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
         pos = None
 
     for i in range(n):
-        # 1) exécution de l'ordre décidé à la clôture précédente, à l'ouverture de cette bougie
+        # 1) exécution de l'ordre décidé à la clôture précédente (market ou limit)
         if pending is not None and pos is None:
-            sig, pending = pending, None
-            side = sig["side"]
-            ref = sig.get("entry")          # prix d'entrée voulu : la clôture de la bougie de confirmation
+            otype = pending.get("order_type", "market")
+            side = pending["side"]
+            ref = pending.get("entry")
             ref = o[i] if ref is None else float(ref)
-            entry = ref * (1 + slip) if side == "long" else ref * (1 - slip)
-            sl = float(sig["sl"])
-            tp = sig.get("tp")
-            risk_dist = abs(entry - sl)
-            if tp is None and sig.get("rr") is not None and risk_dist > 0:
-                rr_val = min(float(sig["rr"]), 8.0)
-                tp = entry + rr_val * risk_dist if side == "long" else entry - rr_val * risk_dist
-            valid = risk_dist > 0 and ((side == "long" and sl < entry) or (side == "short" and sl > entry))
-            if valid and tp is not None:
-                if abs(tp - entry) > 8.0 * risk_dist:
-                    tp = entry + 8.0 * risk_dist if side == "long" else entry - 8.0 * risk_dist
-                valid = (side == "long" and tp > entry) or (side == "short" and tp < entry)
-            if valid and (side == "long" or allow_short):
-                # Taille calculée pour que la perte AU STOP, frais et glissement compris, soit exactement 1 R.
-                sl_fill = sl * (1 - slip) if side == "long" else sl * (1 + slip)
-                loss_unit = abs(entry - sl_fill) + entry * fee + sl_fill * fee
-                risk_cash = balance * risk_pct / 100.0
-                qty = risk_cash / loss_unit
-                if qty * entry > balance * max_leverage:   # levier insuffisant : on ne prend pas le trade (jamais < 1 R)
-                    skipped += 1
-                    continue_flag = True
+            sl = float(pending["sl"])
+            tp = pending.get("tp")
+            sig_i = int(pending.get("sig_i", i - 1))
+            ttl = int(pending.get("ttl", 0) or 0)
+            fill_now = False
+            if otype == "limit":
+                if ttl > 0 and (i - sig_i) > ttl:
+                    pending = None
+                elif side == "short":
+                    # Si le prix touche le TP avant d'avoir touché l'entrée limit, ou invalide le SL avant d'entrer -> annulé
+                    if h[i] >= ref:
+                        fill_now = True
+                    elif (tp is not None and l[i] <= float(tp)) or h[i] >= sl:
+                        pending = None
                 else:
-                    continue_flag = False
+                    if l[i] <= ref:
+                        fill_now = True
+                    elif (tp is not None and h[i] >= float(tp)) or l[i] <= sl:
+                        pending = None
             else:
-                continue_flag = True
-            if not continue_flag:
-                entry_fee = qty * entry * fee
-                balance -= entry_fee
-                pos = {"side": side, "entry": entry, "sl": sl, "init_sl": sl, "tp": tp, "qty": qty, "entry_i": i,
-                       "entry_time": times.iloc[i], "entry_fee": entry_fee, "risk_amount": risk_cash, "risk_dist": risk_dist, "be_done": False,
-                       "meta": sig.get("meta", ""), "info": sig.get("info") or {}}
+                fill_now = True
+
+            if fill_now and pending is not None:
+                sig, pending = pending, None
+                entry = ref if otype == "limit" else (ref * (1 + slip) if side == "long" else ref * (1 - slip))
+                risk_dist = abs(entry - sl)
+                if tp is None and sig.get("rr") is not None and risk_dist > 0:
+                    rr_val = min(float(sig["rr"]), 8.0)
+                    tp = entry + rr_val * risk_dist if side == "long" else entry - rr_val * risk_dist
+                valid = risk_dist > 0 and ((side == "long" and sl < entry) or (side == "short" and sl > entry))
+                if valid and tp is not None:
+                    if abs(tp - entry) > 8.0 * risk_dist:
+                        tp = entry + 8.0 * risk_dist if side == "long" else entry - 8.0 * risk_dist
+                    valid = (side == "long" and tp > entry) or (side == "short" and tp < entry)
+                if valid and (side == "long" or allow_short):
+                    # Taille calculée pour que la perte AU STOP, frais et glissement compris, soit exactement 1 R.
+                    sl_fill = sl * (1 - slip) if side == "long" else sl * (1 + slip)
+                    loss_unit = abs(entry - sl_fill) + entry * fee + sl_fill * fee
+                    risk_cash = balance * risk_pct / 100.0
+                    qty = risk_cash / loss_unit
+                    if qty * entry > balance * max_leverage:   # levier insuffisant : on ne prend pas le trade (jamais < 1 R)
+                        skipped += 1
+                        continue_flag = True
+                    else:
+                        continue_flag = False
+                else:
+                    continue_flag = True
+                if not continue_flag:
+                    entry_fee = qty * entry * fee
+                    balance -= entry_fee
+                    pos = {"side": side, "entry": entry, "sl": sl, "init_sl": sl, "tp": tp, "qty": qty, "entry_i": i,
+                           "entry_time": times.iloc[i], "entry_fee": entry_fee, "risk_amount": risk_cash, "risk_dist": risk_dist, "be_done": False,
+                           "order_type": otype, "meta": sig.get("meta", ""), "info": sig.get("info") or {}}
 
         # 2) gestion de la position sur cette bougie
         if pos is not None:
-            gap = True   # l'ordre est ouvert à la clôture précédente : un gap d'ouverture est possible dès cette bougie
+            same_limit_bar = (pos.get("order_type") == "limit" and i == pos["entry_i"])
+            gap = not same_limit_bar
             sl, tp = pos["sl"], pos["tp"]
             sl_label = "BE" if pos["be_done"] else "SL"
             if pos["side"] == "long":
                 if l[i] <= sl:
                     stop = min(sl, o[i]) if gap else sl
                     close_position(i, stop * (1 - slip), sl_label)
-                elif tp is not None and h[i] >= tp:
+                elif not same_limit_bar and tp is not None and h[i] >= tp:
                     close_position(i, max(tp, o[i]) if gap else tp, "TP")
             else:
                 if h[i] >= sl:
                     stop = max(sl, o[i]) if gap else sl
                     close_position(i, stop * (1 + slip), sl_label)
-                elif tp is not None and l[i] <= tp:
+                elif not same_limit_bar and tp is not None and l[i] <= tp:
                     close_position(i, min(tp, o[i]) if gap else tp, "TP")
-            if pos is not None and be_on and not pos["be_done"]:
+            if pos is not None and not same_limit_bar and be_on and not pos["be_done"]:
                 trig = pos["entry"] + be_rr * pos["risk_dist"] if pos["side"] == "long" else pos["entry"] - be_rr * pos["risk_dist"]
                 if (pos["side"] == "long" and h[i] >= trig) or (pos["side"] == "short" and l[i] <= trig):
                     pos["sl"], pos["be_done"] = pos["entry"], True     # actif à partir de la bougie suivante
@@ -124,8 +147,8 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
             eq += (c[i] - pos["entry"]) * pos["qty"] * direction
         equity[i] = eq
 
-        # 4) nouveau signal à la clôture (exécuté à l'ouverture de la bougie suivante)
-        if pos is None and pending is None and i < n - 1:
+        # 4) nouveau signal à la clôture (exécuté à partir de la bougie suivante ; remplace un ordre limit non rempli)
+        if pos is None and i < n - 1:
             sig = strategy.signal(d, i)
             if sig:
                 pending = sig

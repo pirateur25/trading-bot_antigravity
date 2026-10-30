@@ -69,7 +69,8 @@ def trades_to_json(tr, strat, sym, be_rr=0.0):
                      rl=nz(g("fib_range_low")), rlt=ep(g("fib_range_low_time")), ozl=nz(g("ote_zone_low")), ozh=nz(g("ote_zone_high")),
                      lh=nz(g("fib_leg_high")), lht=ep(g("fib_leg_high_time")), ll=nz(g("fib_leg_low")), llt=ep(g("fib_leg_low_time")),
                      bt=ep(g("bubble_time")), m1=nz(g("mss_first_extreme")), m1t=ep(g("h1_time")),
-                     m2=nz(g("mss_second_extreme")), m2t=ep(g("h2_time")), mo=nz(g("mss_origin_level")), mot=ep(g("l2_time")))
+                     m2=nz(g("mss_second_extreme")), m2t=ep(g("h2_time")), mo=nz(g("mss_origin_level")), mot=ep(g("l2_time")),
+                     fl=nz(g("fvg_lo")), fh=nz(g("fvg_hi")), ft1=ep(g("fvg_t1")), tr_ratio=nz(g("time_ratio")))
         out.append(x)
     return out
 

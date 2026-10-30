@@ -24,7 +24,7 @@ import opt_common as oc  # noqa: E402
 import realism  # noqa: E402
 import strategy_ote as strategy  # noqa: E402
 
-SYMBOLS_DEFAULT = ["EURUSD", "GBPUSD", "USDCHF", "USDJPY", "XAUUSD"]
+SYMBOLS_DEFAULT = ["EURUSD", "GBPUSD", "USDJPY"]
 
 SPACE = {
     "side": ("cat", ["short", "both"]),
@@ -48,6 +48,11 @@ SPACE = {
     "mss_speed_ratio": ("cat", [1.0, 1.5, 2.0, 3.0]),
     "mss_min_sweep_pct": ("cat", [0.0, 0.01, 0.03]),
     "mss_trough_pivot": ("cat", [0, 1]),
+    "max_time_ratio": ("cat", [0.0, 0.75, 1.0, 1.25, 1.5, 2.0]),
+    "entry_mode": ("cat", ["mss", "fvg_15m", "fvg_15m_or_mss", "fvg_conf"]),
+    "entry_lvl": ("cat", [0.0, 0.25, 0.5]),
+    "fvg_min_atr": ("cat", [0.0, 0.15, 0.25]),
+    "ttl": ("cat", [48, 96, 192]),
     "bubble_min_pct_5m": ("cat", [0.0, 0.02, 0.04]),
     "bubble_min_pct_15m": ("cat", [0.0, 0.04, 0.08]),
     "bubble_min_pct_1h": ("cat", [0.0, 0.08, 0.15]),
@@ -65,18 +70,20 @@ FROZEN_DEFAULT = {
     "mss_trough_pivot": 0,
     "min_sl_pct": 0.0,
     "mss_min_sweep_pct": 0.0,
+    "fvg_min_atr": 0.0,
     "range_origin": "leg",
     "leg_lookback": 300,
     "ote_react": 0,
     "side": "both",
 }
 REFERENCE = {
-    "side": "both", "confirms": "mss", "conf_tfs": "5m", "trend_filter": 0, "trend_tf": "4h", "trend_mode": "ema",
-    "zz_atr_trend": 5.0, "ma_len": 200, "range_tfs": "1h", "zz_atr_4h": 3.0, "zz_atr_1h": 1.5,
+    "side": "both", "confirms": "mss", "conf_tfs": "15m,1h", "trend_filter": 0, "trend_tf": "4h", "trend_mode": "ema",
+    "zz_atr_trend": 5.0, "ma_len": 200, "range_tfs": "4h,1h", "zz_atr_4h": 3.0, "zz_atr_1h": 2.5,
     "range_origin": "leg", "leg_lookback": 300, "ote_lo": 0.618, "ote_hi": 0.706, "ote_react": 0,
-    "mss_fractal": 2, "mss_speed_ratio": 3.0, "mss_min_sweep_pct": 0.0, "mss_trough_pivot": 0,
-    "tp_fib": 1.618, "be_rr": 2.0, "sl_buf_atr": 1.5, "min_sl_pct": 0.0, "min_rr": 1.0,
-    "session": "0-24", "session_start": 0, "session_end": 24,
+    "mss_fractal": 4, "mss_speed_ratio": 1.5, "mss_min_sweep_pct": 0.0, "mss_trough_pivot": 0,
+    "max_time_ratio": 0.0, "entry_mode": "fvg_15m", "entry_lvl": 0.0, "fvg_min_atr": 0.0, "ttl": 96,
+    "tp_fib": 1.272, "be_rr": 1000.0, "sl_buf_atr": 0.0, "min_sl_pct": 0.0, "min_rr": 1.0,
+    "session": "7-17", "session_start": 7, "session_end": 17,
 }
 
 
@@ -93,7 +100,9 @@ def suggest_params(trial, frozen, base):
         p = oc.apply_space(trial, {k: SPACE[k] for k in keys}, frozen, p)
 
     pick("side", "confirms", "conf_tfs", "trend_filter", "range_tfs", "range_origin", "ote_lo", "ote_hi", "ote_react",
-         "tp_fib", "be_rr", "sl_buf_atr", "min_sl_pct", "min_rr", "session")
+         "max_time_ratio", "entry_mode", "tp_fib", "be_rr", "sl_buf_atr", "min_sl_pct", "min_rr", "session")
+    if p.get("entry_mode", "mss") != "mss":
+        pick("entry_lvl", "fvg_min_atr", "ttl")
     rt = _csv(p["range_tfs"])
     if "4h" in rt:
         pick("zz_atr_4h")
@@ -189,12 +198,17 @@ class EvaluatorOTE:
             f1[s] = self.sim_slice(s, df_prep, p, t["start"], t["w1"])
             f2[s] = self.sim_slice(s, df_prep, p, t["w1"], t["split"])
         tot_tr = sum(r["trades"] for r in f_full.values())
-        min_tot = max(24, int(self.min_trades * len(self.symbols) * 0.55))
+        eff_min = self.min_trades
+        if p.get("entry_mode", "mss") in ("fvg_15m", "fvg_conf"):
+            eff_min = max(8.0, self.min_trades * 0.45)
+        if float(p.get("max_time_ratio", 0.0) or 0.0) > 0:
+            eff_min = max(8.0, eff_min * 0.65)
+        min_tot = max(15, int(eff_min * len(self.symbols) * 0.55))
         if tot_tr < min_tot:
             return -10.0 + (tot_tr / float(min_tot)) * 5.0
-        fold_min = max(6.0, self.min_trades / 2.0)
-        fold_min_tot = max(8, min_tot // 3)
-        s_full = oc.half_score(f_full, self.min_trades, min_total_trades=min_tot, dd_limit=15.0)
+        fold_min = max(4.0, eff_min / 2.0)
+        fold_min_tot = max(6, min_tot // 3)
+        s_full = oc.half_score(f_full, eff_min, min_total_trades=min_tot, dd_limit=15.0)
         s1 = oc.half_score(f1, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s2 = oc.half_score(f2, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s_wfa = 0.6 * min(s1, s2) + 0.4 * ((s1 + s2) / 2.0)
