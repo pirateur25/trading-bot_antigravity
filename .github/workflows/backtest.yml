@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Paires forex (EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD)"
-        default: "EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD"
+        description: "Paires forex (ex: EURUSD,GBPUSD,USDJPY)"
+        default: "EURUSD,GBPUSD,USDJPY"
       crypto:
         description: "Cryptos FTMO (BTCUSD,ETHUSD,XRPUSD — vide = pas de crypto)"
         default: ""
