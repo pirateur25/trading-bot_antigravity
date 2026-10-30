@@ -13,7 +13,7 @@
  "range_origin": "leg",
  "leg_lookback": 300,
  "ote_lo": 0.618,
- "ote_hi": 0.786,
+ "ote_hi": 0.706,
  "ote_react": 0,
  "ote_react_level": 0.5378,
  "confirms": "mss",
