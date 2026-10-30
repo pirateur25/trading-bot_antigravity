@@ -84,17 +84,23 @@ class Evaluator:
         self.P = {s: (oc.ensure_data(s, datadir), data.PairData(s, datadir))[1] for s in symbols}
         for s in symbols:
             print(f"  {s}: {self.P[s].n} bougies 5m | frais {self.fee[s]:.4f}% | levier {self.lev[s]:g}", flush=True)
-        # Les 6 premiers mois de 2021 (2021-01 -> 2021-07) servent de tampon de préchauffage (warmup)
-        # pour les EMA Daily (1d:50 / 1d:200) et le réservoir de zones FVG HTF (1h/4h/1d).
-        self.t = {
-            s: dict(
-                start=self.P[s].idx_at("2021-07-01"),
-                w1=self.P[s].idx_at("2022-10-01"),
-                split=self.P[s].idx_at(split),
+        # Les 6 premiers mois de l'historique servent de tampon de préchauffage (warmup)
+        # pour les EMA Daily (1d:50 / 1d:200) et le réservoir de zones FVG HTF (1h/4h/1d),
+        # puis la période TRAIN [start, split] est découpée en 3 sous-périodes Walk-Forward équilibrées (f1, f2, f3).
+        self.t = {}
+        for s in symbols:
+            t0_ns = int(self.P[s].base["open_ns"][0])
+            warm_ts = pd.Timestamp(t0_ns, tz="UTC") + pd.Timedelta(days=180)
+            i_start = self.P[s].idx_at(warm_ts)
+            i_split = self.P[s].idx_at(split)
+            span = max(3, i_split - i_start)
+            self.t[s] = dict(
+                start=i_start,
+                w1=i_start + span // 3,
+                w2=i_start + (2 * span) // 3,
+                split=i_split,
                 end=self.P[s].n,
             )
-            for s in symbols
-        }
 
     def run_pair(self, s, p, a, b):
         sigs = strategy.signals(self.P[s], p, a, b)
@@ -106,20 +112,22 @@ class Evaluator:
         return {s: self.run_pair(s, p, self.t[s][a_key], self.t[s][b_key]) for s in self.symbols}
 
     def objective(self, p):
-        # min_trades = objectif par paire sur le TRAIN (ex: 25 => ~12 par pli Walk-Forward de 15 mois)
+        # min_trades = objectif par paire sur le TRAIN, découpé en 3 plis Walk-Forward (f1, f2, f3)
         f_full = self.rows(p, "start", "split")
         tot_tr = sum(r["trades"] for r in f_full.values())
         min_tot = max(24, int(self.min_trades * len(self.symbols) * 0.55))
         if tot_tr < min_tot:
             return -10.0 + (tot_tr / float(min_tot)) * 5.0
-        fold_min = max(6.0, self.min_trades / 2.0)
+        fold_min = max(6.0, self.min_trades / 3.0)
         fold_min_tot = max(8, min_tot // 3)
         f1 = self.rows(p, "start", "w1")
-        f2 = self.rows(p, "w1", "split")
-        s_full = oc.half_score(f_full, self.min_trades, min_total_trades=min_tot, dd_limit=15.0)
+        f2 = self.rows(p, "w1", "w2")
+        f3 = self.rows(p, "w2", "split")
+        s_full = oc.half_score(f_full, self.min_trades, min_total_trades=min_tot, dd_limit=16.0)
         s1 = oc.half_score(f1, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s2 = oc.half_score(f2, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
-        s_wfa = 0.6 * min(s1, s2) + 0.4 * ((s1 + s2) / 2.0)
+        s3 = oc.half_score(f3, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
+        s_wfa = 0.5 * min(s1, s2, s3) + 0.5 * ((s1 + s2 + s3) / 3.0)
         return 0.5 * s_full + 0.5 * s_wfa
 
     def evaluate(self, p, period):

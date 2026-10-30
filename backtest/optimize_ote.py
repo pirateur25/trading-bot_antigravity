@@ -161,17 +161,23 @@ class EvaluatorOTE:
                 "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"],
             })
             print(f"  {s}: {self.P[s].n} bougies 5m | frais {self.fee[s]:.4f}% | levier {self.lev[s]:g}", flush=True)
-        # Les 6 premiers mois de 2021 (2021-01 -> 2021-07) servent de tampon de préchauffage (warmup)
-        # pour les EMA Daily/4h et le ZigZag (leg_lookback=300).
-        self.t = {
-            s: dict(
-                start=self.P[s].idx_at("2021-07-01"),
-                w1=self.P[s].idx_at("2022-10-01"),
-                split=self.P[s].idx_at(split),
+        # Les 6 premiers mois de l'historique servent de tampon de préchauffage (warmup)
+        # pour les EMA Daily/4h et le ZigZag (leg_lookback=300), puis la période TRAIN [start, split]
+        # est automatiquement découpée en 3 sous-périodes Walk-Forward équilibrées (f1, f2, f3).
+        self.t = {}
+        for s in symbols:
+            t0_ns = int(self.P[s].base["open_ns"][0])
+            warm_ts = pd.Timestamp(t0_ns, tz="UTC") + pd.Timedelta(days=180)
+            i_start = self.P[s].idx_at(warm_ts)
+            i_split = self.P[s].idx_at(split)
+            span = max(3, i_split - i_start)
+            self.t[s] = dict(
+                start=i_start,
+                w1=i_start + span // 3,
+                w2=i_start + (2 * span) // 3,
+                split=i_split,
                 end=self.P[s].n,
             )
-            for s in symbols
-        }
 
     def prepare_pair(self, s, p):
         return _OTE(p).prepare(self.df_full[s].copy())
@@ -189,14 +195,15 @@ class EvaluatorOTE:
             return {"return_pct": 0.0, "max_dd_pct": 0.0, "trades": 0, "r_long": 0.0, "r_short": 0.0}
 
     def objective(self, p):
-        # On prépare les signaux UNE SEULE FOIS par paire sur l'historique 2021-2024 (préserve le warmup EMA/ZigZag et accélère x5)
-        f_full, f1, f2 = {}, {}, {}
+        # On prépare les signaux UNE SEULE FOIS par paire sur l'historique TRAIN (préserve le warmup EMA/ZigZag et accélère x5)
+        f_full, f1, f2, f3 = {}, {}, {}, {}
         for s in self.symbols:
             t = self.t[s]
             df_prep = _OTE(p).prepare(self.df_full[s].iloc[:t["split"]].copy())
             f_full[s] = self.sim_slice(s, df_prep, p, t["start"], t["split"])
             f1[s] = self.sim_slice(s, df_prep, p, t["start"], t["w1"])
-            f2[s] = self.sim_slice(s, df_prep, p, t["w1"], t["split"])
+            f2[s] = self.sim_slice(s, df_prep, p, t["w1"], t["w2"])
+            f3[s] = self.sim_slice(s, df_prep, p, t["w2"], t["split"])
         tot_tr = sum(r["trades"] for r in f_full.values())
         eff_min = self.min_trades
         if p.get("entry_mode", "mss") in ("fvg_15m", "fvg_conf"):
@@ -206,12 +213,13 @@ class EvaluatorOTE:
         min_tot = max(15, int(eff_min * len(self.symbols) * 0.55))
         if tot_tr < min_tot:
             return -10.0 + (tot_tr / float(min_tot)) * 5.0
-        fold_min = max(4.0, eff_min / 2.0)
-        fold_min_tot = max(6, min_tot // 3)
-        s_full = oc.half_score(f_full, eff_min, min_total_trades=min_tot, dd_limit=15.0)
+        fold_min = max(4.0, eff_min / 3.0)
+        fold_min_tot = max(5, min_tot // 3)
+        s_full = oc.half_score(f_full, eff_min, min_total_trades=min_tot, dd_limit=16.0)
         s1 = oc.half_score(f1, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s2 = oc.half_score(f2, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
-        s_wfa = 0.6 * min(s1, s2) + 0.4 * ((s1 + s2) / 2.0)
+        s3 = oc.half_score(f3, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
+        s_wfa = 0.5 * min(s1, s2, s3) + 0.5 * ((s1 + s2 + s3) / 3.0)
         return 0.5 * s_full + 0.5 * s_wfa
 
     def evaluate(self, p, period):
