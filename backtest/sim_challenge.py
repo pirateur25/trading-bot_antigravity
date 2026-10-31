@@ -69,7 +69,125 @@ def _ftmo_day(ts: pd.Timestamp) -> pd.Timestamp:
     return base
 
 
-# ---------------------------------------------------------------- Simulation d'une tentative
+# ---------------------------------------------------------------- Simulation d'une tentative (avec support superposition)
+def _run_phases_on_df(
+    df: pd.DataFrame,
+    capital: float,
+    phase_rules: List[Dict],
+    start_ts: pd.Timestamp,
+    idx0: int,
+    max_days: int = 365,
+    worst_case: bool = True,
+) -> Tuple[str, int, int]:
+    """
+    Simule une tentative de challenge FTMO (1 ou 2 phases) à partir de `start_ts` (premier trade `idx0`).
+    Supporte la superposition de trades (plusieurs trades ouverts simultanément sur différentes paires/stratégies) :
+      - Les sorties des trades ouverts sont traitées par ordre chronologique exact (`exit_time`).
+      - En mode `worst_case=True`, l'équité flottante pire cas est `balance - somme(risk_cash des trades simultanément ouverts)`.
+      - La durée retournée est en vrais jours calendaires écoulés depuis `start_ts`.
+    """
+    total_cal_days = 0
+    n = len(df)
+    phase_start_ts = start_ts
+
+    for phase_idx, rules in enumerate(phase_rules):
+        target = rules["target_pct"] / 100.0
+        dd_daily = rules["dd_daily_pct"] / 100.0
+        dd_total = rules["dd_total_pct"] / 100.0
+        min_days = rules["min_days"]
+
+        # Sur FTMO, chaque phase démarre avec le capital initial du compte
+        phase_capital = capital
+        balance = phase_capital
+        day_start_balance = phase_capital
+        days_traded = set()
+        current_day = _ftmo_day(phase_start_ts)
+        open_trades = []  # liste de [exit_time, pnl_cash, risk_cash]
+        phase_done = False
+
+        def advance_day_if_needed(ts: pd.Timestamp):
+            nonlocal current_day, day_start_balance
+            fday = _ftmo_day(ts)
+            if fday != current_day:
+                current_day = fday
+                day_start_balance = balance
+
+        def close_until(ts_limit: pd.Timestamp):
+            nonlocal balance, open_trades
+            open_trades.sort(key=lambda x: x[0])
+            while open_trades and open_trades[0][0] <= ts_limit:
+                xt, pnl_c, _ = open_trades.pop(0)
+                advance_day_if_needed(xt)
+                cal_d = max(1, int(np.ceil((xt - phase_start_ts).total_seconds() / 86400.0)))
+                if cal_d > max_days:
+                    return "timeout", total_cal_days + max_days, xt
+                balance += pnl_c
+                if balance < phase_capital * (1 - dd_total):
+                    return "breach_total", total_cal_days + cal_d, xt
+                if balance < day_start_balance * (1 - dd_daily):
+                    return "breach_daily", total_cal_days + cal_d, xt
+                if balance >= phase_capital * (1 + target) and len(days_traded) >= min_days:
+                    return "phase_success", cal_d, xt
+            return None, 0, ts_limit
+
+        idx = idx0
+        while idx < n:
+            row = df.iloc[idx]
+            entry_t = row["entry_time"]
+            exit_t = row["exit_time"]
+
+            # 1) Clôturer tous les trades ouverts qui se terminent avant ou à entry_t
+            status, d_used, ev_ts = close_until(entry_t)
+            if status in ("breach_total", "breach_daily", "timeout"):
+                return status, d_used, phase_idx
+            if status == "phase_success":
+                total_cal_days += d_used
+                phase_start_ts = ev_ts
+                idx0 = idx
+                phase_done = True
+                break
+
+            # 2) Vérifier le délai calendaire à l'ouverture du nouveau trade
+            cal_d = max(1, int(np.ceil((entry_t - phase_start_ts).total_seconds() / 86400.0)))
+            if cal_d > max_days:
+                return "timeout", total_cal_days + max_days, phase_idx
+
+            advance_day_if_needed(entry_t)
+            days_traded.add(current_day)
+
+            risk_pct_row = float(row["_risk"])
+            risk_cash = balance * risk_pct_row / 100.0
+            pnl_cash = float(row["r"]) * risk_cash
+            open_trades.append([exit_t, pnl_cash, risk_cash])
+
+            # 3) Pire cas intra-bougie : somme des risques de tous les trades simultanément ouverts
+            if worst_case:
+                tot_open_risk = sum(t[2] for t in open_trades)
+                floated = balance - tot_open_risk
+                if floated < phase_capital * (1 - dd_total):
+                    return "breach_total", total_cal_days + cal_d, phase_idx
+                if floated < day_start_balance * (1 - dd_daily):
+                    return "breach_daily", total_cal_days + cal_d, phase_idx
+
+            idx += 1
+
+        if not phase_done:
+            # Clôturer les derniers trades encore ouverts en fin d'historique
+            status, d_used, ev_ts = close_until(pd.Timestamp.max.tz_localize("UTC"))
+            if status in ("breach_total", "breach_daily", "timeout"):
+                return status, d_used, phase_idx
+            if status == "phase_success":
+                total_cal_days += d_used
+                phase_start_ts = ev_ts
+                idx0 = n
+                phase_done = True
+            else:
+                cal_end = max(1, int(np.ceil((df.iloc[-1]["exit_time"] - phase_start_ts).total_seconds() / 86400.0)))
+                return "timeout", total_cal_days + min(cal_end, max_days), phase_idx
+
+    return "success", total_cal_days, len(phase_rules)
+
+
 def simulate_attempt(
     trades: pd.DataFrame,
     capital: float,
@@ -78,91 +196,16 @@ def simulate_attempt(
     start_idx: int = 0,
     max_days: int = 365,
     worst_case: bool = True,
+    start_ts: Optional[pd.Timestamp] = None,
 ) -> Tuple[str, int, int]:
-    """
-    Simule une tentative de challenge FTMO.
-
-    trades : DataFrame trié par entry_time, colonnes [entry_time, exit_time, r, side]
-    capital : capital initial de la phase
-    risk_pct : risque par trade (%)
-    phase_rules : liste de dicts {"target_pct", "dd_daily_pct", "dd_total_pct", "min_days"}
-    start_idx : indice du premier trade à inclure dans cette tentative
-    max_days : plafond de durée par phase
-    worst_case : True = équité flottante = balance - 1R pendant qu'un trade est ouvert
-
-    Retourne : (résultat, nb_jours_total, phase_atteinte)
-    résultat = "success" | "breach_daily" | "breach_total" | "timeout"
-    """
-    current_capital = capital
-    total_days = 0
-
-    for phase_idx, rules in enumerate(phase_rules):
-        target = rules["target_pct"] / 100.0
-        dd_daily = rules["dd_daily_pct"] / 100.0
-        dd_total = rules["dd_total_pct"] / 100.0
-        min_days = rules["min_days"]
-
-        phase_capital = current_capital
-        balance = phase_capital
-        day_start_balance = phase_capital  # équité de début du jour FTMO courant
-        days_traded = set()
-        phase_days = 0
-        current_day = None
-
-        idx = start_idx
-        n = len(trades)
-
-        while idx < n:
-            trade = trades.iloc[idx]
-            entry_t = trade["entry_time"]
-            exit_t = trade["exit_time"]
-
-            # Changement de jour FTMO ?
-            ftmo_day = _ftmo_day(entry_t)
-            if current_day is None:
-                current_day = ftmo_day
-            elif ftmo_day != current_day:
-                current_day = ftmo_day
-                day_start_balance = balance  # reset quotidien
-                phase_days += 1
-                if phase_days >= max_days:
-                    return "timeout", total_days + phase_days, phase_idx
-
-            days_traded.add(ftmo_day)
-
-            risk_cash = balance * risk_pct / 100.0
-
-            # Vérification pire cas intra-bougie
-            if worst_case:
-                floated_eq = balance - risk_cash  # pire cas : le SL est touché
-                if floated_eq < phase_capital * (1 - dd_total):
-                    return "breach_total", total_days + phase_days, phase_idx
-                if floated_eq < day_start_balance * (1 - dd_daily):
-                    return "breach_daily", total_days + phase_days, phase_idx
-
-            # Application du trade
-            pnl_r = float(trade["r"])
-            balance += pnl_r * risk_cash
-
-            # Vérification après sortie
-            if balance < phase_capital * (1 - dd_total):
-                return "breach_total", total_days + phase_days, phase_idx
-            if balance < day_start_balance * (1 - dd_daily):
-                return "breach_daily", total_days + phase_days, phase_idx
-
-            # Phase validée ?
-            if balance >= phase_capital * (1 + target) and len(days_traded) >= min_days:
-                current_capital = balance
-                total_days += phase_days
-                start_idx = idx + 1
-                break
-
-            idx += 1
-        else:
-            # Plus de trades : timeout
-            return "timeout", total_days + phase_days, phase_idx
-
-    return "success", total_days, len(phase_rules)
+    """Simule une tentative de challenge FTMO à partir de `start_idx`."""
+    df = trades.copy()
+    if "_risk" not in df.columns:
+        df["_risk"] = risk_pct
+    for col in ("entry_time", "exit_time"):
+        df[col] = pd.to_datetime(df[col], utc=True).astype("datetime64[ns, UTC]")
+    st_ts = pd.Timestamp(start_ts).tz_convert("UTC") if start_ts is not None else df.iloc[start_idx]["entry_time"]
+    return _run_phases_on_df(df, capital, phase_rules, st_ts, start_idx, max_days, worst_case)
 
 
 # ---------------------------------------------------------------- Simulation Monte-Carlo avec départs glissants
@@ -172,38 +215,37 @@ def simulate_challenge(
     risk_pct: float = 0.75,
     mode: str = "2phases",
     sliding_days: int = 3,
-    max_days_per_phase: int = 365,
+    max_days_per_phase: int = 9999,
     worst_case: bool = True,
     n_min_trades: int = 5,
 ) -> Dict:
     """
     Lance la simulation avec départs glissants (tous les `sliding_days` jours à partir du premier trade).
-
-    Retourne un dict avec :
-      success_pct, breach_daily_pct, breach_total_pct, timeout_pct,
-      median_days, mean_days, n_simulations, details (liste des résultats)
     """
     if trades.empty:
         return {"success_pct": 0, "breach_daily_pct": 0, "breach_total_pct": 0,
                 "timeout_pct": 0, "median_days": 0, "mean_days": 0, "n_simulations": 0, "details": []}
 
     rules = FTMO_RULES[mode]["phases"]
-    trades = trades.sort_values("entry_time").reset_index(drop=True)
+    df = trades.copy()
+    if "_risk" not in df.columns:
+        df["_risk"] = risk_pct
+    for col in ("entry_time", "exit_time"):
+        df[col] = pd.to_datetime(df[col], utc=True).astype("datetime64[ns, UTC]")
+    df = df.sort_values("entry_time").reset_index(drop=True)
 
-    # Génère des points de départ (tous les `sliding_days` jours)
-    min_t = trades["entry_time"].min()
-    max_t = trades["entry_time"].max()
-    starts = pd.date_range(min_t, max_t, freq=f"{sliding_days}D", tz="UTC" if min_t.tzinfo else None)
+    min_t = df["entry_time"].min()
+    max_t = df["entry_time"].max()
+    starts = pd.date_range(min_t, max_t, freq=f"{sliding_days}D", tz="UTC")
+    entry_ns = df["entry_time"].values.astype("int64")
 
     results = []
     for start_ts in starts:
-        # Trouve le premier trade >= start_ts
-        idx0 = int(np.searchsorted(trades["entry_time"].values.astype("int64"),
-                                    int(pd.Timestamp(start_ts).value)))
-        if idx0 >= len(trades) - n_min_trades:
+        idx0 = int(np.searchsorted(entry_ns, int(pd.Timestamp(start_ts).value)))
+        if idx0 >= len(df) - n_min_trades:
             continue
-        res, days, phase = simulate_attempt(
-            trades, capital, risk_pct, rules, idx0, max_days_per_phase, worst_case
+        res, days, phase = _run_phases_on_df(
+            df, capital, rules, start_ts, idx0, max_days_per_phase, worst_case
         )
         results.append({"result": res, "days": days, "phase_reached": phase})
 
@@ -228,7 +270,7 @@ def simulate_challenge(
     }
 
 
-# ---------------------------------------------------------------- Simulation combinée A+B
+# ---------------------------------------------------------------- Simulation combinée A+B (superposition activée)
 def simulate_combined(
     trades_ote: pd.DataFrame,
     trades_fvg: pd.DataFrame,
@@ -237,17 +279,17 @@ def simulate_combined(
     risk_fvg: float = 0.75,
     mode: str = "2phases",
     sliding_days: int = 3,
-    max_days_per_phase: int = 365,
+    max_days_per_phase: int = 9999,
+    allow_overlap: bool = True,
 ) -> Dict:
     """
-    Combine les trades OTE (risque risk_ote) et FVG (risque risk_fvg) et simule le challenge.
-    Les deux stratégies tournent en parallèle ; un seul trade à la fois au global
-    (si les deux signaux arrivent au même moment, OTE a priorité).
+    Combine les trades OTE (risque risk_ote) et FVG (risque risk_fvg) et simule le challenge FTMO.
+    Par défaut (`allow_overlap=True`), les deux stratégies et les différentes paires peuvent superposer
+    leurs trades simultanément (avec cumul du risque flottant en pire cas intra-bougie).
     """
     if trades_ote.empty and trades_fvg.empty:
         return simulate_challenge(pd.DataFrame(), capital, risk_ote, mode, sliding_days, max_days_per_phase)
 
-    # Marque le risque de chaque trade
     dfs = []
     if not trades_ote.empty:
         t = trades_ote.copy()
@@ -260,152 +302,31 @@ def simulate_combined(
         t["_strat"] = "FVG"
         dfs.append(t)
 
-    combined = pd.concat(dfs, ignore_index=True).sort_values("entry_time").reset_index(drop=True)
+    combined = pd.concat(dfs, ignore_index=True)
+    for col in ("entry_time", "exit_time"):
+        combined[col] = pd.to_datetime(combined[col], utc=True).astype("datetime64[ns, UTC]")
+    combined = combined.sort_values("entry_time").reset_index(drop=True)
 
-    # Exclut les chevauchements (un seul trade à la fois)
-    filtered = []
-    busy_until = pd.Timestamp.min.tz_localize("UTC")
-    for _, row in combined.iterrows():
-        et = row["entry_time"]
-        if hasattr(et, "tzinfo") and et.tzinfo is None:
-            et = et.tz_localize("UTC")
-        if et >= busy_until:
-            xt = row["exit_time"]
-            if hasattr(xt, "tzinfo") and xt.tzinfo is None:
-                xt = xt.tz_localize("UTC")
-            busy_until = xt
-            filtered.append(row)
+    if not allow_overlap:
+        filtered = []
+        busy_until = pd.Timestamp.min.tz_localize("UTC")
+        for _, row in combined.iterrows():
+            if row["entry_time"] >= busy_until:
+                busy_until = row["exit_time"]
+                filtered.append(row)
+        if not filtered:
+            return simulate_challenge(pd.DataFrame(), capital, risk_ote, mode, sliding_days, max_days_per_phase)
+        combined = pd.DataFrame(filtered).reset_index(drop=True)
 
-    if not filtered:
-        return simulate_challenge(pd.DataFrame(), capital, risk_ote, mode, sliding_days, max_days_per_phase)
-
-    combined_filtered = pd.DataFrame(filtered).reset_index(drop=True)
-
-    # Simule avec risque variable par trade
-    rules = FTMO_RULES[mode]["phases"]
-    starts = pd.date_range(
-        combined_filtered["entry_time"].min(),
-        combined_filtered["entry_time"].max(),
-        freq=f"{sliding_days}D",
-        tz="UTC",
+    return simulate_challenge(
+        combined,
+        capital=capital,
+        risk_pct=risk_ote,
+        mode=mode,
+        sliding_days=sliding_days,
+        max_days_per_phase=max_days_per_phase,
+        worst_case=True,
     )
-
-    results = []
-    for start_ts in starts:
-        idx0 = int(np.searchsorted(
-            combined_filtered["entry_time"].values.astype("int64"),
-            int(pd.Timestamp(start_ts).value)
-        ))
-        if idx0 >= len(combined_filtered) - 5:
-            continue
-
-        # Simulation avec risque variable
-        current_capital = capital
-        total_days = 0
-        final_result = "timeout"
-        final_days = 0
-
-        for phase_idx, prules in enumerate(rules):
-            target = prules["target_pct"] / 100.0
-            dd_daily = prules["dd_daily_pct"] / 100.0
-            dd_total = prules["dd_total_pct"] / 100.0
-            min_days = prules["min_days"]
-
-            phase_capital = current_capital
-            balance = phase_capital
-            day_start_balance = phase_capital
-            days_traded = set()
-            phase_days = 0
-            current_day = None
-            breached = False
-            success = False
-
-            for i in range(idx0, len(combined_filtered)):
-                row = combined_filtered.iloc[i]
-                entry_t = row["entry_time"]
-                if hasattr(entry_t, "tzinfo") and entry_t.tzinfo is None:
-                    entry_t = entry_t.tz_localize("UTC")
-
-                ftmo_day = _ftmo_day(entry_t)
-                if current_day is None:
-                    current_day = ftmo_day
-                elif ftmo_day != current_day:
-                    current_day = ftmo_day
-                    day_start_balance = balance
-                    phase_days += 1
-                    if phase_days >= max_days_per_phase:
-                        final_result = "timeout"
-                        final_days = total_days + phase_days
-                        breached = True
-                        break
-
-                days_traded.add(ftmo_day)
-                risk_pct_row = float(row["_risk"])
-                risk_cash = balance * risk_pct_row / 100.0
-
-                # Pire cas intra-bougie
-                floated = balance - risk_cash
-                if floated < phase_capital * (1 - dd_total):
-                    final_result = "breach_total"
-                    final_days = total_days + phase_days
-                    breached = True
-                    break
-                if floated < day_start_balance * (1 - dd_daily):
-                    final_result = "breach_daily"
-                    final_days = total_days + phase_days
-                    breached = True
-                    break
-
-                balance += float(row["r"]) * risk_cash
-
-                if balance < phase_capital * (1 - dd_total):
-                    final_result = "breach_total"
-                    final_days = total_days + phase_days
-                    breached = True
-                    break
-                if balance < day_start_balance * (1 - dd_daily):
-                    final_result = "breach_daily"
-                    final_days = total_days + phase_days
-                    breached = True
-                    break
-
-                if balance >= phase_capital * (1 + target) and len(days_traded) >= min_days:
-                    current_capital = balance
-                    total_days += phase_days
-                    idx0 = i + 1
-                    success = True
-                    break
-
-            if breached:
-                break
-            if not success:
-                final_result = "timeout"
-                final_days = total_days + phase_days
-                break
-            if phase_idx == len(rules) - 1:
-                final_result = "success"
-                final_days = total_days
-
-        results.append({"result": final_result, "days": final_days})
-
-    if not results:
-        return {"success_pct": 0, "breach_daily_pct": 0, "breach_total_pct": 0,
-                "timeout_pct": 0, "median_days": 0, "mean_days": 0, "n_simulations": 0}
-
-    df_r = pd.DataFrame(results)
-    n = len(df_r)
-    success_mask = df_r["result"] == "success"
-    days_success = df_r.loc[success_mask, "days"]
-
-    return {
-        "success_pct": float(success_mask.mean() * 100),
-        "breach_daily_pct": float((df_r["result"] == "breach_daily").mean() * 100),
-        "breach_total_pct": float((df_r["result"] == "breach_total").mean() * 100),
-        "timeout_pct": float((df_r["result"] == "timeout").mean() * 100),
-        "median_days": float(days_success.median()) if len(days_success) else float("nan"),
-        "mean_days": float(days_success.mean()) if len(days_success) else float("nan"),
-        "n_simulations": n,
-    }
 
 
 def format_sim_result(result: Dict, mode: str, risk: float) -> str:

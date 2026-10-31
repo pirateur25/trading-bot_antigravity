@@ -255,12 +255,13 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
     rows = {"train": ev.evaluate(p, "train"), "test": ev.evaluate(p, "test")}
     brows = {"train": ev.evaluate(baseline, "train"), "test": ev.evaluate(baseline, "test")}
     ntrades = sum(r["trades"] for r in rows["train"].values())
+    split_str = getattr(a, "split", "2024-01-01")
     L = [f"✅ Optuna {label.upper()} (Walk-Forward) — {len(done)} essais",
          f"Mode retenu : {mode_lbl} (score pic {best.value:.3f} | plateau {sc_plat:.3f} | réf {base_score:.3f})",
          f"Leviers optimisés ({len(tried)}) : {', '.join(tried)}",
          "Leviers figés : " + (", ".join(f"{k}={v}" for k, v in frozen.items()) or "aucun"),
-         f"TRAIN (2021-2023) retenu : {fmt(rows['train'])}", f"TRAIN référence : {fmt(brows['train'])}",
-         f"TEST (2024+) retenu : {fmt(rows['test'])}", f"TEST référence : {fmt(brows['test'])}"]
+         f"TRAIN (2015->{split_str}) retenu : {fmt(rows['train'])}", f"TRAIN référence : {fmt(brows['train'])}",
+         f"TEST ({split_str}+) retenu : {fmt(rows['test'])}", f"TEST référence : {fmt(brows['test'])}"]
     tst = sum(r["return_pct"] for r in rows["test"].values())
     tb = sum(r["return_pct"] for r in brows["test"].values())
     for per, rr in (("TRAIN", rows["train"]), ("TEST", rows["test"])):
@@ -269,14 +270,14 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
         tot = sl + ss
         if p.get("side") == "both" and tot > 0 and max(sl, ss) > 0.8 * tot and min(sl, ss) < 0.2 * tot:
             L.append(f"⚠️ {per} : le profit vient presque d'un seul sens → dérive du marché probable.")
-    if ntrades < 60:
+    if ntrades < 90:
         L.append(f"⚠️ Seulement {ntrades} trades sur le train : configuration trop sélective.")
     if use_ref:
         L.append("➡️ Aucun essai n'a battu la référence sur le Walk-Forward : la référence a été conservée dans le JSON.")
     elif tst < tb:
-        L.append("⚠️ Meilleur sur Walk-Forward mais moins bon que la référence sur TEST 2024+.")
+        L.append(f"⚠️ Meilleur sur Walk-Forward mais moins bon que la référence sur TEST {split_str}+.")
     else:
-        L.append("👍 Meilleur que la référence sur TRAIN (Walk-Forward) ET sur TEST 2024+.")
+        L.append(f"👍 Meilleur que la référence sur TRAIN (Walk-Forward) ET sur TEST {split_str}+.")
     txt = "\n".join(L)
     print("\n" + txt)
     print(json.dumps(p, indent=1))

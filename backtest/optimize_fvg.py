@@ -111,18 +111,20 @@ class Evaluator:
         return {s: self.run_pair(s, p, self.t[s][a_key], self.t[s][b_key]) for s in self.symbols}
 
     def objective(self, p):
-        # min_trades = objectif par paire sur le TRAIN, découpé en 3 plis Walk-Forward (f1, f2, f3)
+        # Si min_trades >= 120, il exprime la cible sur les 9 ans de TRAIN (ex: 180 -> ~115 trades/paire visés, plancher 210 trades total)
         f_full = self.rows(p, "start", "split")
         tot_tr = sum(r["trades"] for r in f_full.values())
-        min_tot = max(24, int(self.min_trades * len(self.symbols) * 0.55))
+        n_sym = max(1, len(self.symbols))
+        pair_target = (self.min_trades * 0.65) if self.min_trades >= 120 else float(self.min_trades)
+        min_tot = max(180 if self.min_trades >= 120 else 24, int(pair_target * n_sym * 0.60))
         if tot_tr < min_tot:
             return -10.0 + (tot_tr / float(min_tot)) * 5.0
-        fold_min = max(6.0, self.min_trades / 3.0)
-        fold_min_tot = max(8, min_tot // 3)
+        fold_min = max(15.0, pair_target / 3.0)
+        fold_min_tot = max(45, min_tot // 3)
         f1 = self.rows(p, "start", "w1")
         f2 = self.rows(p, "w1", "w2")
         f3 = self.rows(p, "w2", "split")
-        s_full = oc.half_score(f_full, self.min_trades, min_total_trades=min_tot, dd_limit=16.0)
+        s_full = oc.half_score(f_full, pair_target, min_total_trades=min_tot, dd_limit=16.0)
         s1 = oc.half_score(f1, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s2 = oc.half_score(f2, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s3 = oc.half_score(f3, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
@@ -167,7 +169,7 @@ def main():
     ap.add_argument("--outdir", default="results_opt")
     ap.add_argument("--save_every", type=int, default=25)
     ap.add_argument("--wall_time", type=float, default=300.0)
-    ap.add_argument("--min_trades", type=int, default=25, help="trades visés par paire sur les 3 ans de TRAIN")
+    ap.add_argument("--min_trades", type=int, default=180, help="trades visés sur les 9 ans de TRAIN (180)")
     ap.add_argument("--freeze", default="", help="'k=v;k2=v2' leviers figés en plus")
     ap.add_argument("--unfreeze", default="", help="leviers à libérer, séparés par des virgules")
     a = ap.parse_args()

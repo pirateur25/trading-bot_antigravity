@@ -204,16 +204,19 @@ class EvaluatorOTE:
             f2[s] = self.sim_slice(s, df_prep, p, t["w1"], t["w2"])
             f3[s] = self.sim_slice(s, df_prep, p, t["w2"], t["split"])
         tot_tr = sum(r["trades"] for r in f_full.values())
-        eff_min = self.min_trades
+        # Si min_trades >= 90, il exprime la cible totale sur le panier TRAIN (ex: 120 sur 3 paires = 40/paire)
+        n_sym = max(1, len(self.symbols))
+        pair_target = (self.min_trades / float(n_sym)) if self.min_trades >= 90 else float(self.min_trades)
+        eff_min = pair_target
         if p.get("entry_mode", "mss") in ("fvg_15m", "fvg_conf"):
-            eff_min = max(8.0, self.min_trades * 0.45)
+            eff_min = max(25.0, pair_target * 0.75)
         if float(p.get("max_time_ratio", 0.0) or 0.0) > 0:
-            eff_min = max(8.0, eff_min * 0.65)
-        min_tot = max(15, int(eff_min * len(self.symbols) * 0.55))
+            eff_min = max(25.0, eff_min * 0.85)
+        min_tot = max(75, int(eff_min * n_sym * 0.75))
         if tot_tr < min_tot:
             return -10.0 + (tot_tr / float(min_tot)) * 5.0
-        fold_min = max(4.0, eff_min / 3.0)
-        fold_min_tot = max(5, min_tot // 3)
+        fold_min = max(8.0, eff_min / 3.0)
+        fold_min_tot = max(20, min_tot // 3)
         s_full = oc.half_score(f_full, eff_min, min_total_trades=min_tot, dd_limit=16.0)
         s1 = oc.half_score(f1, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
         s2 = oc.half_score(f2, fold_min, min_total_trades=fold_min_tot, dd_limit=12.0)
@@ -242,7 +245,7 @@ def main():
     ap.add_argument("--outdir", default="results_opt")
     ap.add_argument("--save_every", type=int, default=25)
     ap.add_argument("--wall_time", type=float, default=300.0)
-    ap.add_argument("--min_trades", type=int, default=25, help="trades visés par paire sur les 3 ans de TRAIN")
+    ap.add_argument("--min_trades", type=int, default=120, help="trades visés sur les 9 ans de TRAIN (120 = ~40/paire)")
     ap.add_argument("--freeze", default="")
     ap.add_argument("--unfreeze", default="", help="ex: ote_lo,ote_hi,confirms")
     a = ap.parse_args()
