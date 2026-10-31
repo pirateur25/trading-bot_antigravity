@@ -14,13 +14,13 @@ on:
         default: "300"
       split:
         description: "Début de la période TEST hors-échantillon (TRAIN = 2015 -> split, découpé en 3 plis WFA)"
-        default: "2023-01-01"
+        default: "2024-01-01"
       fee:
         description: "Frais par ordre en % (-1 = frais FTMO réels par actif)"
         default: "-1"
       min_trades:
-        description: "Trades visés par paire sur la période TRAIN (en dessous le score est réduit)"
-        default: "50"
+        description: "Trades visés sur la période TRAIN 2015-2023 (120 = ~40/paire)"
+        default: "120"
       freeze:
         description: "Leviers figés en plus 'k=v;k2=v2' (vide = défauts)"
         default: ""
