@@ -1,11 +1,11 @@
-name: Backtest OTE + FVG
+name: Backtest OTE + FVG + Silver Bullet
 
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Paires forex (ex: EURUSD,GBPUSD,USDJPY)"
-        default: "EURUSD,GBPUSD,USDJPY"
+        description: "Actifs à tester (ex: EURUSD,GBPUSD,USDJPY,NAS100)"
+        default: "EURUSD,GBPUSD,USDJPY,NAS100"
       crypto:
         description: "Cryptos FTMO (BTCUSD,ETHUSD,XRPUSD — vide = pas de crypto)"
         default: ""
@@ -21,14 +21,17 @@ on:
       risk_fvg:
         description: "Risque FVG par trade (%)"
         default: "0.75"
+      risk_sb:
+        description: "Risque Silver Bullet par trade (%)"
+        default: "0.5"
       leverage:
-        description: "Levier maximum (Swing FTMO = 30 forex, 2 crypto)"
+        description: "Levier maximum (Swing FTMO = 30 forex/indices, 2 crypto)"
         default: "30"
       mode:
         description: "Stratégies à lancer"
         type: choice
-        default: "both"
-        options: ["both", "ote_only", "fvg_only"]
+        default: "all"
+        options: ["all", "sb_only", "both", "ote_only", "fvg_only"]
       sim_challenge:
         description: "Simuler le challenge FTMO ?"
         type: choice
@@ -37,8 +40,8 @@ on:
       ftmo_mode:
         description: "Type de challenge FTMO"
         type: choice
-        default: "2phases"
-        options: ["2phases", "1phase"]
+        default: "1phase"
+        options: ["1phase", "2phases"]
       use_best_ote:
         description: "Utiliser results/best_params_ote.json ?"
         type: choice
@@ -54,6 +57,9 @@ on:
         default: ""
       params_fvg:
         description: "Réglages FVG supplémentaires (k=v;k2=v2)"
+        default: ""
+      params_sb:
+        description: "Réglages Silver Bullet supplémentaires (ex: sessions=London,NY AM;rr=2.0)"
         default: ""
 
 jobs:
@@ -110,6 +116,7 @@ jobs:
           END: ${{ inputs.end }}
           RISK_OTE: ${{ inputs.risk_ote }}
           RISK_FVG: ${{ inputs.risk_fvg }}
+          RISK_SB: ${{ inputs.risk_sb }}
           LEVERAGE: ${{ inputs.leverage }}
           MODE: ${{ inputs.mode }}
           SIM_CHALLENGE: ${{ inputs.sim_challenge }}
@@ -118,6 +125,7 @@ jobs:
           USE_BEST_FVG: ${{ inputs.use_best_fvg }}
           PARAMS_OTE: ${{ inputs.params_ote }}
           PARAMS_FVG: ${{ inputs.params_fvg }}
+          PARAMS_SB: ${{ inputs.params_sb }}
         run: |
           python backtest/run_backtest.py \
             --symbols "$SYMBOLS" \
@@ -126,6 +134,7 @@ jobs:
             --end "$END" \
             --risk_ote "$RISK_OTE" \
             --risk_fvg "$RISK_FVG" \
+            --risk_sb "$RISK_SB" \
             --leverage "$LEVERAGE" \
             --mode "$MODE" \
             --sim_challenge "$SIM_CHALLENGE" \
@@ -133,7 +142,8 @@ jobs:
             --use_best_ote "$USE_BEST_OTE" \
             --use_best_fvg "$USE_BEST_FVG" \
             --params_ote "$PARAMS_OTE" \
-            --params_fvg "$PARAMS_FVG"
+            --params_fvg "$PARAMS_FVG" \
+            --params_sb "$PARAMS_SB"
 
       - name: Sauvegarde des résultats
         if: always()
