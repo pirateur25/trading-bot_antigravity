@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Actifs à tester (ex: EURUSD,GBPUSD,USDJPY,NAS100)"
-        default: "EURUSD,GBPUSD,USDJPY,NAS100"
+        description: "Actifs à tester (ex: EURUSD,GBPUSD,USDJPY,NAS100,USA500)"
+        default: "EURUSD,GBPUSD,USDJPY,NAS100,USA500"
       crypto:
         description: "Cryptos FTMO (BTCUSD,ETHUSD,XRPUSD — vide = pas de crypto)"
         default: ""
@@ -144,6 +144,12 @@ jobs:
             --params_ote "$PARAMS_OTE" \
             --params_fvg "$PARAMS_FVG" \
             --params_sb "$PARAMS_SB"
+
+      - name: Génération du visualiseur HTML avec les actifs testés
+        run: |
+          ALL_SYMS="${{ inputs.symbols }}${{ inputs.crypto && ',' || '' }}${{ inputs.crypto }}"
+          python backtest/viewer_export.py build --symbols "$ALL_SYMS" --out results/viewer.html
+          cp results/viewer.html viewer/viewer.html
 
       - name: Sauvegarde des résultats
         if: always()
