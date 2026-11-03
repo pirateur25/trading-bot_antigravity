@@ -96,37 +96,71 @@ def _resolve_file(symbol, datadir="data"):
     raise FileNotFoundError(f"Fichier introuvable pour {symbol} dans {datadir}/ ({symbol}.csv.gz)")
 
 
-def encode_pair_stdlib(symbol, datadir="data", since=None):
-    """Même encodage 5m en pur Python standard (sans numpy ni pandas)."""
-    path = _resolve_file(symbol, datadir)
-    since_ts = None
-    if since:
-        dt_s = datetime.fromisoformat(since.strip())
-        if dt_s.tzinfo is None:
-            dt_s = dt_s.replace(tzinfo=timezone.utc)
-        since_ts = int(dt_s.timestamp())
+def _parse_ts_stdlib(t_str):
+    t_str = str(t_str).strip()
+    if t_str.isdigit():
+        v = int(t_str)
+        return v // 1000 if v > 10**11 else v
+    if " GMT" in t_str:
+        t_str = t_str.split(" GMT")[0].strip()
+    if t_str.endswith(" UTC"):
+        t_str = t_str[:-4].strip()
+    elif t_str.endswith("Z"):
+        t_str = t_str[:-1].strip()
+    if len(t_str) >= 10 and t_str[2] in (".", "/") and t_str[5] in (".", "/"):
+        d_part, rest = (t_str.split(" ", 1) + ["00:00:00"])[:2]
+        dd, mm, yyyy = d_part[0:2], d_part[3:5], d_part[6:10]
+        t_str = f"{yyyy}-{mm}-{dd} {rest}"
+    elif len(t_str) >= 10 and t_str[4] in (".", "/") and t_str[7] in (".", "/"):
+        t_str = t_str[:4] + "-" + t_str[5:7] + "-" + t_str[8:]
+    dt = datetime.fromisoformat(t_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
-    op = (lambda p: gzip.open(p, "rt", encoding="utf-8")) if path.endswith(".gz") else (lambda p: open(p, "r", encoding="utf-8"))
+
+def encode_pair_stdlib(symbol, datadir="data", since=None):
+    """Même encodage 5m en pur Python standard (sans numpy ni pandas), compatible exports JForex/Dukascopy."""
+    path = _resolve_file(symbol, datadir)
+    since_ts = _parse_ts_stdlib(since) if since else None
+
+    op = (lambda p: gzip.open(p, "rt", encoding="utf-8", errors="replace")) if path.endswith(".gz") else (lambda p: open(p, "r", encoding="utf-8", errors="replace"))
+    with op(path) as f:
+        first_line = f.readline().strip()
+    sep = ";" if first_line.count(";") > first_line.count(",") else ("\t" if first_line.count("\t") > first_line.count(",") else ",")
+
     rows = []
     seen = set()
     with op(path) as f:
-        rdr = csv.DictReader(f)
+        rdr = csv.reader(f, delimiter=sep)
+        header = next(rdr, None)
+        if not header:
+            raise ValueError(f"Fichier vide : {path}")
+        hl = [h.strip().lower() for h in header]
+        has_header = not any(ch.isdigit() for ch in hl[0])
+        if has_header:
+            t_idx = next((i for i, h in enumerate(hl) if h in ("time", "gmt time", "local time", "datetime", "date", "timestamp", "open_time", "time (utc)", "time_utc")), 0)
+            o_idx = next((i for i, h in enumerate(hl) if h in ("open", "o", "open_price")), 1)
+            h_idx = next((i for i, h in enumerate(hl) if h in ("high", "h", "high_price")), 2)
+            l_idx = next((i for i, h in enumerate(hl) if h in ("low", "l", "low_price")), 3)
+            c_idx = next((i for i, h in enumerate(hl) if h in ("close", "c", "close_price")), 4)
+        else:
+            t_idx, o_idx, h_idx, l_idx, c_idx = 0, 1, 2, 3, 4
+            ts = _parse_ts_stdlib(header[t_idx])
+            if since_ts is None or ts >= since_ts:
+                seen.add(ts)
+                rows.append((ts, float(header[o_idx]), float(header[h_idx]), float(header[l_idx]), float(header[c_idx])))
+
         for r in rdr:
-            t_str = r["time"].strip()
-            if t_str.endswith(" UTC"):
-                t_str = t_str[:-4] + "+00:00"
-            elif t_str.endswith("Z"):
-                t_str = t_str[:-1] + "+00:00"
-            dt = datetime.fromisoformat(t_str)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            ts = int(dt.timestamp())
+            if len(r) < 5:
+                continue
+            ts = _parse_ts_stdlib(r[t_idx])
             if since_ts is not None and ts < since_ts:
                 continue
             if ts in seen:
                 continue
             seen.add(ts)
-            rows.append((ts, float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])))
+            rows.append((ts, float(r[o_idx]), float(r[h_idx]), float(r[l_idx]), float(r[c_idx])))
 
     rows.sort(key=lambda x: x[0])
     mid_c = rows[len(rows) // 2][4]

@@ -8,9 +8,59 @@ NS_MIN = 60 * 10**9
 
 
 def load_csv(path):
-    df = pd.read_csv(path, parse_dates=["time"])
-    if df["time"].dt.tz is None:
-        df["time"] = df["time"].dt.tz_localize("UTC")
+    import gzip as _gz
+    op = (lambda p: _gz.open(p, "rt", encoding="utf-8", errors="replace")) if path.endswith(".gz") else (lambda p: open(p, "r", encoding="utf-8", errors="replace"))
+    with op(path) as f:
+        first_line = f.readline().strip()
+    sep = ";" if first_line.count(";") > first_line.count(",") else ("\t" if first_line.count("\t") > first_line.count(",") else ",")
+    df = pd.read_csv(path, sep=sep)
+
+    col_map = {}
+    for c in df.columns:
+        cl = str(c).strip().lower()
+        if cl in ("time", "gmt time", "local time", "datetime", "date", "timestamp", "open_time", "time (utc)", "time_utc"):
+            col_map[c] = "time"
+        elif cl in ("open", "o", "open_price", "askopen", "bidopen"):
+            col_map[c] = "open"
+        elif cl in ("high", "h", "high_price", "askhigh", "bidhigh"):
+            col_map[c] = "high"
+        elif cl in ("low", "l", "low_price", "asklow", "bidlow"):
+            col_map[c] = "low"
+        elif cl in ("close", "c", "close_price", "askclose", "bidclose"):
+            col_map[c] = "close"
+        elif cl in ("volume", "vol", "v", "tick_volume"):
+            col_map[c] = "volume"
+    df = df.rename(columns=col_map)
+
+    if "time" not in df.columns:
+        first_col = str(df.columns[0]).strip()
+        if any(ch.isdigit() for ch in first_col) and len(df.columns) >= 5:
+            df = pd.read_csv(path, sep=sep, header=None)
+            base_cols = ["time", "open", "high", "low", "close"] + (["volume"] if len(df.columns) >= 6 else [])
+            df.columns = base_cols + [f"col_{i}" for i in range(len(base_cols), len(df.columns))]
+        else:
+            df = df.rename(columns={df.columns[0]: "time"})
+
+    # Conversion des colonnes OHLC si elles n'étaient pas encore nommées en minuscules
+    if not all(k in df.columns for k in ("open", "high", "low", "close")) and len(df.columns) >= 5:
+        rename_pos = {df.columns[1]: "open", df.columns[2]: "high", df.columns[3]: "low", df.columns[4]: "close"}
+        df = df.rename(columns=rename_pos)
+
+    if pd.api.types.is_numeric_dtype(df["time"]):
+        v0 = float(df["time"].dropna().iloc[0])
+        unit = "ns" if v0 > 1e14 else ("ms" if v0 > 1e11 else "s")
+        df["time"] = pd.to_datetime(df["time"], unit=unit, utc=True)
+    else:
+        s_col = df["time"].astype(str).str.strip()
+        s0 = s_col.iloc[0] if len(s_col) else ""
+        if " GMT" in s0:
+            s_col = s_col.str.replace(r"\s*GMT([+-]\d{4})?", "", regex=True).str.strip()
+        dayfirst = len(s0) >= 10 and s0[2] in (".", "/") and s0[5] in (".", "/")
+        df["time"] = pd.to_datetime(s_col, dayfirst=dayfirst, utc=True, format="mixed")
+
+    for k in ("open", "high", "low", "close"):
+        df[k] = pd.to_numeric(df[k], errors="coerce")
+    df = df.dropna(subset=["time", "open", "high", "low", "close"])
     return df.sort_values("time").drop_duplicates("time").reset_index(drop=True)
 
 
