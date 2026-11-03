@@ -165,7 +165,7 @@ def plot(sym, strat, eq, st, path, tr=None, risk=0.5):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100")
+    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100,USA500")
     ap.add_argument("--crypto", default="")
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--start", default="2015-01-01")
@@ -182,8 +182,8 @@ def main():
     ap.add_argument("--params_ote", default="")
     ap.add_argument("--params_fvg", default="")
     ap.add_argument("--params_sb", default="")
-    ap.add_argument("--fvg_skip", default="USDCHF,BTCUSD,ETHUSD,XRPUSD,NAS100", help="Actifs ignorés par FVG en mode all/both")
-    ap.add_argument("--ote_skip", default="NAS100", help="Actifs ignorés par OTE en mode all/both")
+    ap.add_argument("--fvg_skip", default="USDCHF,BTCUSD,ETHUSD,XRPUSD,NAS100,USA500", help="Actifs ignorés par FVG en mode all/both")
+    ap.add_argument("--ote_skip", default="NAS100,USA500", help="Actifs ignorés par OTE en mode all/both")
     ap.add_argument("--outdir", default="results")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)

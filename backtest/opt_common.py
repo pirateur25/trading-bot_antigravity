@@ -74,8 +74,12 @@ def side_r(tr):
 
 def ensure_data(sym, datadir, start="2021-01-01"):
     """Crypto absente de data/ : téléchargement auto (Binance Vision -> KuCoin -> Bybit)."""
-    if any(os.path.exists(os.path.join(datadir, sym + e)) for e in (".csv.gz", ".csv")):
+    import data_forex as dfx
+    try:
+        dfx.resolve_data_path(sym, datadir)
         return
+    except FileNotFoundError:
+        pass
     import data_crypto as dc
     df, src = dc.load(dc.ftmo_to_binance(sym), "5m", start, source="auto", use_cache=False)
     os.makedirs(datadir, exist_ok=True)

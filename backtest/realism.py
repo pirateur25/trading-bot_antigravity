@@ -36,6 +36,8 @@ FTMO_COSTS = {
     "XAGUSD": 0.005 + 0.03    / 30.0  * 100 / 2,   # ~0.10%  (cher!)
     # INDICES (pas de commission, spread seul)
     "NAS100": 0.0 + 1.45 / 20000.0 * 100 / 2,      # ~0.00363%
+    "USA500": 0.0 + 0.45 / 5500.0  * 100 / 2,      # ~0.00409%
+    "US500":  0.0 + 0.45 / 5500.0  * 100 / 2,      # ~0.00409%
     "US30":   0.0 + 2.38 / 40000.0 * 100 / 2,      # ~0.00298%
     "GER40":  0.0 + 3.33 / 18000.0 * 100 / 2,      # ~0.00925%
     # CRYPTO (commission 0.065% par ordre + demi-spread)
@@ -73,6 +75,6 @@ def levier_for(symbol: str) -> float:
         return 2.0   # crypto : levier très limité sur FTMO (x2 max typique)
     if sym in ("XAUUSD", "XAGUSD"):
         return 50.0  # métaux précieux
-    if sym in ("NAS100", "US30", "GER40"):
+    if sym in ("NAS100", "USA500", "US500", "US30", "GER40"):
         return 30.0  # indices
     return 30.0  # forex compte Swing : levier 1:30 (FTMO Swing)

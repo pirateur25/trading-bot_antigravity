@@ -3,34 +3,50 @@ backtest/viewer_export.py — visualiseur de trades (graphique en chandeliers in
 
 DEUX ÉTAPES :
  1) UNE SEULE FOIS sur ton PC (les bougies sont "installées" dans le fichier) :
-        python backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDCHF,USDJPY,XAUUSD --out viewer/viewer.html
-    -> viewer/viewer.html contient tout l'historique 5m des paires choisies (a ouvrir dans le navigateur, hors-ligne sauf la librairie du graphique).
+        python3 backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDJPY,NAS100 --out viewer/viewer.html
+    -> viewer/viewer.html contient tout l'historique 5m des paires choisies (à ouvrir dans le navigateur, hors-ligne sauf la librairie du graphique).
+    (Fonctionne même sans numpy/pandas installés sur le PC local !)
  2) A chaque backtest, run_backtest.py envoie sur Telegram un petit fichier  viewer_trades.json  (seulement les trades).
     Dans le visualiseur : bouton « Charger trades » (ou glisser-déposer le fichier). Rien d'autre à modifier.
 Pour ajouter des paires plus tard (ex. cryptos) : relancer l'étape 1 avec --symbols plus longue.
 """
 import argparse
 import base64
+import csv
+from datetime import datetime, timezone
 import gzip
 import json
 import os
 import sys
 
-import numpy as np
-import pandas as pd
+try:
+    import numpy as np
+    import pandas as pd
+except ImportError:
+    np = None
+    pd = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 
+def _is_nan(v):
+    return isinstance(v, float) and v != v
+
+
 def ep(s):
-    if s is None or (isinstance(s, float) and np.isnan(s)) or s == "":
+    if s is None or _is_nan(s) or s == "":
         return None
-    return int(pd.Timestamp(s).timestamp())
+    if pd is not None:
+        return int(pd.Timestamp(s).timestamp())
+    dt = datetime.fromisoformat(str(s).strip())
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 
 def nz(v):
-    return None if v is None or (isinstance(v, float) and np.isnan(v)) else float(v)
+    return None if v is None or _is_nan(v) else float(v)
 
 
 def pick_div(price):
@@ -38,7 +54,7 @@ def pick_div(price):
 
 
 def encode_pair(P, name, since=None):
-    """Bougies 5m en différences entières, gzip + base64 (même format que l'ancien visualiseur, un seul segment)."""
+    """Bougies 5m en différences entières, gzip + base64 (depuis un objet PairData numpy/pandas)."""
     div = pick_div(float(np.nanmedian(P.base["c"])))
     ts = (P.base["open_ns"] // 10**9).astype(np.int64)
     i0 = int(np.searchsorted(ts, pd.Timestamp(since).timestamp())) if since else 0
@@ -51,6 +67,84 @@ def encode_pair(P, name, since=None):
         pt, pc = t[i], C[i]
     b64 = base64.b64encode(gzip.compress(json.dumps([v], separators=(",", ":")).encode(), 9)).decode()
     return {"name": name, "div": div, "b64": b64}
+
+
+def _resolve_file(symbol, datadir="data"):
+    sym = symbol.upper()
+    for e in (".csv.gz", ".csv"):
+        p = os.path.join(datadir, sym + e)
+        if os.path.exists(p):
+            return p
+    if os.path.isdir(datadir):
+        prefixes = [sym]
+        if sym in ("USA500", "US500"):
+            prefixes = ["USA500", "US500", "SPX500", "SP500"]
+        elif sym in ("NAS100", "US100"):
+            prefixes = ["NAS100", "USATECH", "USTEC", "US100"]
+        for fname in sorted(os.listdir(datadir)):
+            up = fname.upper()
+            if any(up.startswith(pref) for pref in prefixes) and (up.endswith(".CSV.GZ") or up.endswith(".CSV")):
+                src = os.path.join(datadir, fname)
+                ext = ".csv.gz" if up.endswith(".CSV.GZ") else ".csv"
+                dst = os.path.join(datadir, sym + ext)
+                try:
+                    os.rename(src, dst)
+                    print(f"[data] Fichier renommé automatiquement : {fname} -> {sym + ext}", flush=True)
+                    return dst
+                except OSError:
+                    return src
+    raise FileNotFoundError(f"Fichier introuvable pour {symbol} dans {datadir}/ ({symbol}.csv.gz)")
+
+
+def encode_pair_stdlib(symbol, datadir="data", since=None):
+    """Même encodage 5m en pur Python standard (sans numpy ni pandas)."""
+    path = _resolve_file(symbol, datadir)
+    since_ts = None
+    if since:
+        dt_s = datetime.fromisoformat(since.strip())
+        if dt_s.tzinfo is None:
+            dt_s = dt_s.replace(tzinfo=timezone.utc)
+        since_ts = int(dt_s.timestamp())
+
+    op = (lambda p: gzip.open(p, "rt", encoding="utf-8")) if path.endswith(".gz") else (lambda p: open(p, "r", encoding="utf-8"))
+    rows = []
+    seen = set()
+    with op(path) as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            t_str = r["time"].strip()
+            if t_str.endswith(" UTC"):
+                t_str = t_str[:-4] + "+00:00"
+            elif t_str.endswith("Z"):
+                t_str = t_str[:-1] + "+00:00"
+            dt = datetime.fromisoformat(t_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ts = int(dt.timestamp())
+            if since_ts is not None and ts < since_ts:
+                continue
+            if ts in seen:
+                continue
+            seen.add(ts)
+            rows.append((ts, float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])))
+
+    rows.sort(key=lambda x: x[0])
+    mid_c = rows[len(rows) // 2][4]
+    div = pick_div(mid_c)
+    t0 = rows[0][0] // 300
+    o0 = round(rows[0][1] * div)
+    v = [t0, o0]
+    pt, pc = t0, o0
+    for ts, o_f, h_f, l_f, c_f in rows:
+        ti = ts // 300
+        oi = round(o_f * div)
+        hi = round(h_f * div)
+        li = round(l_f * div)
+        ci = round(c_f * div)
+        v.extend((ti - pt, oi - pc, hi - oi, oi - li, ci - oi))
+        pt, pc = ti, ci
+    b64 = base64.b64encode(gzip.compress(json.dumps([v], separators=(",", ":")).encode(), 9)).decode()
+    return {"name": symbol, "div": div, "b64": b64}
 
 
 def trades_to_json(tr, strat, sym, be_rr=0.0):
@@ -85,15 +179,22 @@ def write_trades_json(trades, path):
 
 
 def build(symbols, datadir, out, since=None):
-    import data_forex as data
-    import opt_common as oc
     pairs = []
-    for s in symbols:
-        oc.ensure_data(s, datadir)   # crypto absente : téléchargement automatique
-        P = data.PairData(s, datadir)
-        e = encode_pair(P, s, since)
-        pairs.append(e)
-        print(f"{s}: {len(e['b64']) / 1e6:.1f} Mo", flush=True)
+    if np is not None and pd is not None:
+        import data_forex as data
+        import opt_common as oc
+        for s in symbols:
+            oc.ensure_data(s, datadir)
+            P = data.PairData(s, datadir)
+            e = encode_pair(P, s, since)
+            pairs.append(e)
+            print(f"{s}: {len(e['b64']) / 1e6:.1f} Mo", flush=True)
+    else:
+        for s in symbols:
+            print(f"Encodage de {s} (mode standard sans numpy)...", flush=True)
+            e = encode_pair_stdlib(s, datadir, since)
+            pairs.append(e)
+            print(f"{s}: {len(e['b64']) / 1e6:.1f} Mo", flush=True)
     html = open(os.path.join(HERE, "..", "viewer", "template.html"), encoding="utf-8").read().replace("/*PAIRS*/[]", json.dumps(pairs, separators=(",", ":")))
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     open(out, "w", encoding="utf-8").write(html)
@@ -103,10 +204,9 @@ def build(symbols, datadir, out, since=None):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["build"])
-    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100")
+    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100,USA500")
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--out", default="viewer/viewer.html")
     ap.add_argument("--since", default="", help="ne garder que les bougies depuis cette date (réduit la taille), ex. 2023-01-01")
     a = ap.parse_args()
     build([s.strip().upper() for s in a.symbols.split(",") if s.strip()], a.datadir, a.out, a.since or None)
-

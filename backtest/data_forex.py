@@ -39,12 +39,40 @@ def neg(f):
     return g
 
 
+def resolve_data_path(symbol, datadir="data"):
+    """Trouve data/<SYMBOL>.csv.gz (et renomme automatiquement les exports bruts type USA500IDXUSD_5m_...csv.gz)."""
+    sym = symbol.upper()
+    for ext in (".csv.gz", ".csv"):
+        p = os.path.join(datadir, sym + ext)
+        if os.path.exists(p):
+            return p
+    if os.path.isdir(datadir):
+        prefixes = [sym]
+        if sym in ("USA500", "US500"):
+            prefixes = ["USA500", "US500", "SPX500", "SP500"]
+        elif sym in ("NAS100", "US100"):
+            prefixes = ["NAS100", "USATECH", "USTEC", "US100"]
+        for fname in sorted(os.listdir(datadir)):
+            up = fname.upper()
+            if any(up.startswith(pref) for pref in prefixes) and (up.endswith(".CSV.GZ") or up.endswith(".CSV")):
+                src = os.path.join(datadir, fname)
+                ext = ".csv.gz" if up.endswith(".CSV.GZ") else ".csv"
+                dst = os.path.join(datadir, sym + ext)
+                try:
+                    os.rename(src, dst)
+                    print(f"[data] Fichier renommé automatiquement : {fname} -> {sym + ext}")
+                    return dst
+                except OSError:
+                    return src
+    raise FileNotFoundError(f"Historique introuvable pour {symbol} dans {datadir}/")
+
+
 class PairData:
     """Toutes les données d'une paire + caches (événements MSS, zones FVG HTF, filtres de tendance)."""
 
     def __init__(self, symbol, datadir="data"):
         self.symbol = symbol
-        path = next(os.path.join(datadir, symbol + e) for e in (".csv.gz", ".csv") if os.path.exists(os.path.join(datadir, symbol + e)))
+        path = resolve_data_path(symbol, datadir)
         df = load_csv(path)
         self.times = df["time"]
         self.base = make_frame(df, 5, 5)
