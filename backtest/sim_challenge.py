@@ -270,7 +270,7 @@ def simulate_challenge(
     }
 
 
-# ---------------------------------------------------------------- Simulation combinée A+B (superposition activée)
+# ---------------------------------------------------------------- Simulation combinée A+B(+C Silver Bullet) (superposition activée)
 def simulate_combined(
     trades_ote: pd.DataFrame,
     trades_fvg: pd.DataFrame,
@@ -281,25 +281,35 @@ def simulate_combined(
     sliding_days: int = 3,
     max_days_per_phase: int = 9999,
     allow_overlap: bool = True,
+    trades_sb: Optional[pd.DataFrame] = None,
+    risk_sb: float = 0.5,
 ) -> Dict:
     """
-    Combine les trades OTE (risque risk_ote) et FVG (risque risk_fvg) et simule le challenge FTMO.
-    Par défaut (`allow_overlap=True`), les deux stratégies et les différentes paires peuvent superposer
+    Combine les trades OTE (risque risk_ote), FVG (risque risk_fvg) et/ou SB (risque risk_sb) et simule le challenge FTMO.
+    Par défaut (`allow_overlap=True`), les stratégies et les différentes paires peuvent superposer
     leurs trades simultanément (avec cumul du risque flottant en pire cas intra-bougie).
     """
-    if trades_ote.empty and trades_fvg.empty:
+    has_ote = trades_ote is not None and not trades_ote.empty
+    has_fvg = trades_fvg is not None and not trades_fvg.empty
+    has_sb = trades_sb is not None and not trades_sb.empty
+    if not has_ote and not has_fvg and not has_sb:
         return simulate_challenge(pd.DataFrame(), capital, risk_ote, mode, sliding_days, max_days_per_phase)
 
     dfs = []
-    if not trades_ote.empty:
+    if has_ote:
         t = trades_ote.copy()
         t["_risk"] = risk_ote
         t["_strat"] = "OTE"
         dfs.append(t)
-    if not trades_fvg.empty:
+    if has_fvg:
         t = trades_fvg.copy()
         t["_risk"] = risk_fvg
         t["_strat"] = "FVG"
+        dfs.append(t)
+    if has_sb:
+        t = trades_sb.copy()
+        t["_risk"] = risk_sb
+        t["_strat"] = "SB"
         dfs.append(t)
 
     combined = pd.concat(dfs, ignore_index=True)
