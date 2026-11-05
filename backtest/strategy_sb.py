@@ -35,6 +35,12 @@ PARAMS = {
     "sessions": "London,NY AM,NY PM",
     "side": "both",
     "be_rr": 0.0,
+    "trend_filter": 0,          # 0 = pas de filtre | 1 = uniquement dans le sens de la tendance
+    "trend_tf": "1h",           # "1h" ou "4h"
+    "trend_mode": "mm20_50",    # "mm20_50" | "ema_mm20_50" | "ema" | "ma" | "dow" | "both"
+    "ma_len": 200,              # longueur EMA pour trend_mode in ("ema", "ma", "both")
+    "ma_slope_bars": 5,         # pente EMA sur N bougies HTF pour trend_mode in ("ma", "both")
+    "zz_atr_trend": 4.0,        # multiplicateur ATR du ZigZag pour trend_mode in ("dow", "both")
 }
 
 
@@ -61,6 +67,149 @@ def _ny_vectors(pd_):
     return pd_.cache[key]
 
 
+def _zigzag_causal(h, l, atr, mult):
+    """ZigZag causal identique à strategy_ote.zigzag : renvoie les 2 derniers sommets et creux confirmés."""
+    n = len(h)
+    nan = np.nan
+    out = {k: np.full(n, nan) for k in ("cur_hi", "prev_hi", "cur_lo", "prev_lo")}
+    d = 0
+    started = False
+    hh = ll = ext = nan
+    hh_i = ll_i = -1
+    cur_hi = prev_hi = cur_lo = prev_lo = nan
+    for t in range(n):
+        a = atr[t]
+        if a != a:
+            continue
+        thr = mult * a
+        if not started:
+            hh, hh_i, ll, ll_i, started = h[t], t, l[t], t, True
+        elif d == 0:
+            if h[t] > hh:
+                hh, hh_i = h[t], t
+            if l[t] < ll:
+                ll, ll_i = l[t], t
+            if hh - ll >= thr:
+                if ll_i < hh_i:
+                    cur_lo, d, ext = ll, 1, hh
+                elif hh_i < ll_i:
+                    cur_hi, d, ext = hh, -1, ll
+        elif d == 1:
+            if h[t] > ext:
+                ext = h[t]
+            if ext - l[t] >= thr:
+                prev_hi, cur_hi = cur_hi, ext
+                d, ext = -1, l[t]
+        else:
+            if l[t] < ext:
+                ext = l[t]
+            if h[t] - ext >= thr:
+                prev_lo, cur_lo = cur_lo, ext
+                d, ext = 1, h[t]
+        out["cur_hi"][t], out["prev_hi"][t] = cur_hi, prev_hi
+        out["cur_lo"][t], out["prev_lo"][t] = cur_lo, prev_lo
+    return out
+
+
+def _trend_dir_on_tf(pd_, tf, mode, ma_len, ma_slope_bars, zz_atr_trend):
+    """
+    Calcule la direction de tendance sur l'unité `tf` ("1h" ou "4h") et la projette causalement
+    sur chaque bougie 5m de base :
+      +1 = tendance haussière (longs autorisés)
+      -1 = tendance baissière (shorts autorisés)
+       0 = neutre / hors tendance (aucun trade)
+
+    Modes disponibles :
+      - "mm20_50"     : SMA 20 > SMA 50 et close > SMA 50 (haussier) ; SMA 20 < SMA 50 et close < SMA 50 (baissier)
+      - "ema_mm20_50" : EMA 20 > EMA 50 et close > EMA 50 (haussier) ; EMA 20 < EMA 50 et close < EMA 50 (baissier)
+      - "ema"         : close > EMA(ma_len) (haussier) ; close < EMA(ma_len) (baissier) (identique OTE/FVG)
+      - "ma"          : close > EMA(ma_len) et pente EMA > 0 sur ma_slope_bars (haussier) ; inverse (baissier) (OTE)
+      - "dow"         : structure ZigZag (HH + HL et close >= cur_lo pour haussier ; LH + LL et close <= cur_hi pour baissier) (OTE)
+      - "both"        : accord simultané "dow" ET "ma" (OTE)
+    """
+    key = ("sb_trend", tf, mode, int(ma_len), int(ma_slope_bars), round(float(zz_atr_trend), 4))
+    if key in pd_.cache:
+        return pd_.cache[key]
+
+    f = pd_.frames[tf]
+    c = f["c"]
+    h = f["h"]
+    l = f["l"]
+    n = len(c)
+    s_c = pd.Series(c)
+
+    bull = np.zeros(n, dtype=bool)
+    bear = np.zeros(n, dtype=bool)
+
+    if mode == "mm20_50":
+        mm20 = s_c.rolling(20).mean().to_numpy()
+        mm50 = s_c.rolling(50).mean().to_numpy()
+        with np.errstate(invalid="ignore"):
+            bull = (mm20 > mm50) & (c > mm50)
+            bear = (mm20 < mm50) & (c < mm50)
+    elif mode == "ema_mm20_50":
+        mm20 = s_c.ewm(span=20, adjust=False).mean().to_numpy()
+        mm50 = s_c.ewm(span=50, adjust=False).mean().to_numpy()
+        warmup = 10
+        idx_ok = np.arange(n) >= warmup
+        with np.errstate(invalid="ignore"):
+            bull = idx_ok & (mm20 > mm50) & (c > mm50)
+            bear = idx_ok & (mm20 < mm50) & (c < mm50)
+    else:
+        bull_dow = np.zeros(n, dtype=bool)
+        bear_dow = np.zeros(n, dtype=bool)
+        bull_ma = np.zeros(n, dtype=bool)
+        bear_ma = np.zeros(n, dtype=bool)
+
+        if mode in ("dow", "both"):
+            zz_key = ("sb_zz", tf, round(float(zz_atr_trend), 4))
+            if zz_key not in pd_.cache:
+                zz_b = _zigzag_causal(h, l, f["atr"], float(zz_atr_trend))
+                zz_l = _zigzag_causal(-l, -h, f["atr"], float(zz_atr_trend))
+                pd_.cache[zz_key] = (zz_b, zz_l)
+            zz_b, zz_l = pd_.cache[zz_key]
+            have_b = ~(np.isnan(zz_b["prev_hi"]) | np.isnan(zz_b["prev_lo"]) | np.isnan(zz_b["cur_hi"]) | np.isnan(zz_b["cur_lo"]))
+            have_l = ~(np.isnan(zz_l["prev_hi"]) | np.isnan(zz_l["prev_lo"]) | np.isnan(zz_l["cur_hi"]) | np.isnan(zz_l["cur_lo"]))
+            with np.errstate(invalid="ignore"):
+                bear_dow = have_b & (zz_b["cur_hi"] < zz_b["prev_hi"]) & (zz_b["cur_lo"] < zz_b["prev_lo"]) & (c <= zz_b["cur_hi"])
+                bull_dow = have_l & (zz_l["cur_hi"] < zz_l["prev_hi"]) & (zz_l["cur_lo"] < zz_l["prev_lo"]) & ((-c) <= zz_l["cur_hi"])
+
+        if mode in ("ema", "ma", "both"):
+            ema = s_c.ewm(span=int(ma_len), adjust=False).mean().to_numpy()
+            warmup = min(10, max(2, int(ma_len) // 10))
+            idx_ok = np.arange(n) >= warmup
+            if mode == "ema":
+                with np.errstate(invalid="ignore"):
+                    bull_ma = idx_ok & (c > ema)
+                    bear_ma = idx_ok & (c < ema)
+            else:
+                k = max(1, int(ma_slope_bars))
+                slope = ema - np.concatenate([np.full(k, np.nan), ema[:-k]])
+                with np.errstate(invalid="ignore"):
+                    bull_ma = idx_ok & (c > ema) & (slope > 0)
+                    bear_ma = idx_ok & (c < ema) & (slope < 0)
+
+        if mode == "dow":
+            bull, bear = bull_dow, bear_dow
+        elif mode in ("ema", "ma"):
+            bull, bear = bull_ma, bear_ma
+        else:
+            bull, bear = (bull_dow & bull_ma), (bear_dow & bear_ma)
+
+    st = np.zeros(n, dtype=np.int8)
+    st[bull] = 1
+    st[bear] = -1
+
+    j_key = ("sb_j_map", tf)
+    if j_key not in pd_.cache:
+        pd_.cache[j_key] = np.searchsorted(f["close_ns"], pd_.base["close_ns"], side="right") - 1
+    j = pd_.cache[j_key]
+
+    mapped = np.where(j >= 0, st[np.clip(j, 0, max(0, n - 1))], 0).astype(np.int8)
+    pd_.cache[key] = mapped
+    return mapped
+
+
 def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None, i0=0, i1=None):
     """
     Exécute le backtest Silver Bullet sur `pd_` dans l'intervalle de bougies 5m `[i0, i1)`.
@@ -80,6 +229,16 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
     fee = fee_pct / 100.0
 
     ny_hour, ny_day = _ny_vectors(pd_)
+
+    trend_filter = int(p.get("trend_filter", 0) or 0)
+    trend_vec = None
+    if trend_filter:
+        t_tf = str(p.get("trend_tf", "1h") or "1h")
+        t_mode = str(p.get("trend_mode", "mm20_50") or "mm20_50")
+        t_ma_len = int(p.get("ma_len", 200) or 200)
+        t_slope = int(p.get("ma_slope_bars", 5) or 5)
+        t_zz = float(p.get("zz_atr_trend", 4.0) or 4.0)
+        trend_vec = _trend_dir_on_tf(pd_, t_tf, t_mode, t_ma_len, t_slope, t_zz)
 
     # 1) Détection de la PREMIÈRE FVG 5m par fenêtre (jour NY, heure session D in {3, 10, 14})
     # La bougie centrale du gap est `i` (avec D <= open_time[i] < F, donc ny_hour[i] in SESSIONS).
@@ -116,6 +275,8 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
         if bull:
             if side_filter not in ("both", "long"):
                 continue
+            if trend_vec is not None and trend_vec[i + 1] != 1:
+                continue
             fvg_lo = float(h[i - 1])
             fvg_hi = float(l[i + 1])
             entry = fvg_hi          # haut du gap
@@ -127,6 +288,8 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             sign = -1               # -1 = long (convention interne)
         else:
             if side_filter not in ("both", "short"):
+                continue
+            if trend_vec is not None and trend_vec[i + 1] != -1:
                 continue
             fvg_lo = float(h[i + 1])
             fvg_hi = float(l[i - 1])

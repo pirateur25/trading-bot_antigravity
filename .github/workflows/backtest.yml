@@ -52,6 +52,11 @@ on:
         type: choice
         default: "oui"
         options: ["oui", "non"]
+      use_best_sb:
+        description: "Utiliser results/best_params_sb.json ?"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
       params_ote:
         description: "Réglages OTE supplémentaires (k=v;k2=v2)"
         default: ""
@@ -123,6 +128,7 @@ jobs:
           FTMO_MODE: ${{ inputs.ftmo_mode }}
           USE_BEST_OTE: ${{ inputs.use_best_ote }}
           USE_BEST_FVG: ${{ inputs.use_best_fvg }}
+          USE_BEST_SB: ${{ inputs.use_best_sb }}
           PARAMS_OTE: ${{ inputs.params_ote }}
           PARAMS_FVG: ${{ inputs.params_fvg }}
           PARAMS_SB: ${{ inputs.params_sb }}
@@ -141,6 +147,7 @@ jobs:
             --ftmo_mode "$FTMO_MODE" \
             --use_best_ote "$USE_BEST_OTE" \
             --use_best_fvg "$USE_BEST_FVG" \
+            --use_best_sb "$USE_BEST_SB" \
             --params_ote "$PARAMS_OTE" \
             --params_fvg "$PARAMS_FVG" \
             --params_sb "$PARAMS_SB"

@@ -179,6 +179,7 @@ def main():
     ap.add_argument("--ftmo_mode", default="1phase", choices=["1phase", "2phases"])
     ap.add_argument("--use_best_ote", default="oui")
     ap.add_argument("--use_best_fvg", default="oui")
+    ap.add_argument("--use_best_sb", default="oui")
     ap.add_argument("--params_ote", default="")
     ap.add_argument("--params_fvg", default="")
     ap.add_argument("--params_sb", default="")
@@ -195,7 +196,7 @@ def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     p_ote = load_params(strategy_ote, os.path.join(here, "results", "best_params_ote.json") if a.use_best_ote == "oui" else "", a.params_ote)
     p_fvg = load_params(strategy_fvg, os.path.join(here, "results", "best_params_fvg.json") if a.use_best_fvg == "oui" else "", a.params_fvg)
-    p_sb = load_params(strategy_sb, "", a.params_sb)
+    p_sb = load_params(strategy_sb, os.path.join(here, "results", "best_params_sb.json") if a.use_best_sb == "oui" else "", a.params_sb)
     tg(f"🚀 Backtest {a.mode} : {', '.join(forex + crypto)} depuis {a.start}\nOTE {a.risk_ote}% | FVG {a.risk_fvg}% | SB {a.risk_sb}%")
 
     if a.mode == "fvg_only":
