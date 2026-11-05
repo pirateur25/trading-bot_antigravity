@@ -1,11 +1,11 @@
-name: Backtest OTE + FVG + Silver Bullet
+name: Backtest OTE + FVG + OPR
 
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Actifs à tester (ex: EURUSD,GBPUSD,USDJPY,NAS100,USA500)"
-        default: "EURUSD,GBPUSD,USDJPY,NAS100,USA500"
+        description: "Actifs à tester (ex: EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30)"
+        default: "EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30"
       crypto:
         description: "Cryptos FTMO (BTCUSD,ETHUSD,XRPUSD — vide = pas de crypto)"
         default: ""
@@ -21,8 +21,8 @@ on:
       risk_fvg:
         description: "Risque FVG par trade (%)"
         default: "0.75"
-      risk_sb:
-        description: "Risque Silver Bullet par trade (%)"
+      risk_opr:
+        description: "Risque OPR par trade (%)"
         default: "0.5"
       leverage:
         description: "Levier maximum (Swing FTMO = 30 forex/indices, 2 crypto)"
@@ -31,7 +31,7 @@ on:
         description: "Stratégies à lancer"
         type: choice
         default: "all"
-        options: ["all", "sb_only", "both", "ote_only", "fvg_only"]
+        options: ["all", "opr_only", "both", "ote_only", "fvg_only"]
       sim_challenge:
         description: "Simuler le challenge FTMO ?"
         type: choice
@@ -52,19 +52,14 @@ on:
         type: choice
         default: "oui"
         options: ["oui", "non"]
-      use_best_sb:
-        description: "Utiliser results/best_params_sb.json ?"
-        type: choice
-        default: "oui"
-        options: ["oui", "non"]
       params_ote:
         description: "Réglages OTE supplémentaires (k=v;k2=v2)"
         default: ""
       params_fvg:
         description: "Réglages FVG supplémentaires (k=v;k2=v2)"
         default: ""
-      params_sb:
-        description: "Réglages Silver Bullet supplémentaires (ex: sessions=London,NY AM;rr=2.0)"
+      params_opr:
+        description: "Réglages OPR supplémentaires (ex: rr_break=2.5;min_rr_reint=2.0;be_rr=1.0)"
         default: ""
 
 jobs:
@@ -121,17 +116,16 @@ jobs:
           END: ${{ inputs.end }}
           RISK_OTE: ${{ inputs.risk_ote }}
           RISK_FVG: ${{ inputs.risk_fvg }}
-          RISK_SB: ${{ inputs.risk_sb }}
+          RISK_OPR: ${{ inputs.risk_opr }}
           LEVERAGE: ${{ inputs.leverage }}
           MODE: ${{ inputs.mode }}
           SIM_CHALLENGE: ${{ inputs.sim_challenge }}
           FTMO_MODE: ${{ inputs.ftmo_mode }}
           USE_BEST_OTE: ${{ inputs.use_best_ote }}
           USE_BEST_FVG: ${{ inputs.use_best_fvg }}
-          USE_BEST_SB: ${{ inputs.use_best_sb }}
           PARAMS_OTE: ${{ inputs.params_ote }}
           PARAMS_FVG: ${{ inputs.params_fvg }}
-          PARAMS_SB: ${{ inputs.params_sb }}
+          PARAMS_OPR: ${{ inputs.params_opr }}
         run: |
           python backtest/run_backtest.py \
             --symbols "$SYMBOLS" \
@@ -140,17 +134,16 @@ jobs:
             --end "$END" \
             --risk_ote "$RISK_OTE" \
             --risk_fvg "$RISK_FVG" \
-            --risk_sb "$RISK_SB" \
+            --risk_opr "$RISK_OPR" \
             --leverage "$LEVERAGE" \
             --mode "$MODE" \
             --sim_challenge "$SIM_CHALLENGE" \
             --ftmo_mode "$FTMO_MODE" \
             --use_best_ote "$USE_BEST_OTE" \
             --use_best_fvg "$USE_BEST_FVG" \
-            --use_best_sb "$USE_BEST_SB" \
             --params_ote "$PARAMS_OTE" \
             --params_fvg "$PARAMS_FVG" \
-            --params_sb "$PARAMS_SB"
+            --params_opr "$PARAMS_OPR"
 
       - name: Génération du visualiseur HTML avec les actifs testés
         run: |

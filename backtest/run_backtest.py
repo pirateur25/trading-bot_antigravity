@@ -1,9 +1,9 @@
 """
-backtest/run_backtest.py — point d'entrée : stratégies OTE (A), FVG (B) et/ou Silver Bullet (SB) sur forex + indices + cryptos FTMO,
-rapport Telegram (résumé global et par session London / NY AM / NY PM, courbes, CSV détaillé des trades) et simulation FTMO.
+backtest/run_backtest.py — point d'entrée : stratégies OTE (A), FVG (B) et/ou OPR sur forex + indices (NAS100, USA500, US30) + cryptos FTMO,
+rapport Telegram (résumé global et par setup OPR Cassure / Réintégration, courbes, CSV détaillé des trades) et simulation FTMO.
 
 Exemple :
-  python backtest/run_backtest.py --symbols EURUSD,GBPUSD,USDJPY,NAS100 --mode all
+  python backtest/run_backtest.py --symbols EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30 --mode all
 """
 import argparse
 import json
@@ -24,11 +24,22 @@ import engine_ote  # noqa: E402
 import realism  # noqa: E402
 import sim_challenge as sim_ch  # noqa: E402
 import strategy_fvg  # noqa: E402
+import strategy_opr  # noqa: E402
 import strategy_ote  # noqa: E402
-import strategy_sb  # noqa: E402
 import viewer_export as ve  # noqa: E402
 
 CAPITAL = 10000.0
+
+INDICES_OPR = {"NAS100", "US100", "USA500", "US500", "US30", "GER40"}
+
+
+def normalize_sym(sym: str) -> str:
+    s = sym.strip().upper()
+    if s == "US100":
+        return "NAS100"
+    if s == "US500":
+        return "USA500"
+    return s
 
 
 def tg(text=None, photo=None, document=None):
@@ -64,14 +75,14 @@ def ensure_data(sym, datadir, start):
 def stats_of(tr, eq, risk_pct=0.5):
     if len(tr) == 0:
         return {"return_pct": 0.0, "max_dd_pct": 0.0, "trades": 0, "avg_r": 0.0, "win_pct": 0.0, "pf": 0.0,
-                "longs": 0, "shorts": 0, "by_year": {}, "by_side": {}, "by_session": {}}
+                "longs": 0, "shorts": 0, "by_year": {}, "by_side": {}, "by_setup": {}}
     eq = np.asarray(eq, float)
     eq = eq[~np.isnan(eq)]
     peak = np.maximum.accumulate(eq)
     r = tr["r"]
     wins, loss = r[r > 0].sum(), -r[r <= 0].sum()
     yr = pd.to_datetime(tr["entry_time"], utc=True).dt.year
-    by_sess = strategy_sb.session_stats(tr, risk_pct, CAPITAL) if "session" in tr.columns else {}
+    by_setup = strategy_opr.setup_stats(tr, risk_pct, CAPITAL) if "session" in tr.columns else {}
     return {
         "return_pct": (eq[-1] / CAPITAL - 1) * 100,
         "max_dd_pct": float(((eq - peak) / peak).min() * 100),
@@ -83,7 +94,7 @@ def stats_of(tr, eq, risk_pct=0.5):
         "shorts": int((tr["side"] == "short").sum()),
         "by_year": {str(y): (len(g), float(g["r"].mean())) for y, g in tr.groupby(yr)},
         "by_side": {s: (len(g), float(g["r"].mean())) for s, g in tr.groupby("side")},
-        "by_session": by_sess,
+        "by_setup": by_setup,
     }
 
 
@@ -91,14 +102,14 @@ def summary(sym, strat, st, risk, fee, extra=""):
     t = [f"📈 {sym} — {strat} | risque {risk}% | frais {fee:.4f}%/ordre",
          f"Rendement {st['return_pct']:+.2f}% | DD max {st['max_dd_pct']:.2f}% | {st['trades']} trades | gagnants {st['win_pct']:.1f}% | "
          f"espérance {st['avg_r']:+.3f} R | PF {st['pf']:.2f} | L/S {st['longs']}/{st['shorts']}"]
-    if st.get("by_session"):
-        t.append("Par session (heure NY) :")
-        for sname in strategy_sb.SESSION_ORDER:
-             sd = st["by_session"].get(sname, {})
-             t.append(
-                 f"  • {sname:6s} : {sd.get('return_pct', 0.0):+6.2f}% | DD {sd.get('max_dd_pct', 0.0):6.2f}% | "
-                 f"{sd.get('trades', 0):3d}t | WR {sd.get('win_pct', 0.0):4.1f}% | {sd.get('avg_r', 0.0):+.2f}R (cumul {sd.get('sum_r', 0.0):+.1f}R)"
-             )
+    if st.get("by_setup"):
+        t.append("Par setup OPR :")
+        for sname in strategy_opr.SETUP_ORDER:
+            sd = st["by_setup"].get(sname, {})
+            t.append(
+                f"  • {sname:13s} : {sd.get('return_pct', 0.0):+6.2f}% | DD {sd.get('max_dd_pct', 0.0):6.2f}% | "
+                f"{sd.get('trades', 0):3d}t | WR {sd.get('win_pct', 0.0):4.1f}% | {sd.get('avg_r', 0.0):+.2f}R (cumul {sd.get('sum_r', 0.0):+.1f}R)"
+            )
     if st["by_year"]:
         t.append("Par année : " + " | ".join(f"{y}: {n}t {r:+.2f}R" for y, (n, r) in st["by_year"].items()))
     if st["by_side"]:
@@ -148,8 +159,8 @@ def run_ote(P, sym, i0, i1, risk, fee, lev, p):
     return tr, eq.ffill().to_numpy()
 
 
-def run_sb(P, sym, i0, i1, risk, fee, lev, p):
-    return strategy_sb.run(P, capital=CAPITAL, risk_pct=risk, fee_pct=fee, leverage=lev, p=p, i0=i0, i1=i1)
+def run_opr(P, sym, i0, i1, risk, fee, lev, p):
+    return strategy_opr.run(P, capital=CAPITAL, risk_pct=risk, fee_pct=fee, leverage=lev, p=p, i0=i0, i1=i1)
 
 
 def plot(sym, strat, eq, st, path, tr=None, risk=0.5):
@@ -165,55 +176,59 @@ def plot(sym, strat, eq, st, path, tr=None, risk=0.5):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100,USA500")
+    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30")
     ap.add_argument("--crypto", default="")
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--start", default="2015-01-01")
     ap.add_argument("--end", default="")
     ap.add_argument("--risk_ote", type=float, default=0.5)
     ap.add_argument("--risk_fvg", type=float, default=0.75)
-    ap.add_argument("--risk_sb", type=float, default=0.5)
+    ap.add_argument("--risk_opr", type=float, default=0.5)
     ap.add_argument("--leverage", type=float, default=0.0, help="0 = levier FTMO par actif (realism.py)")
-    ap.add_argument("--mode", default="all", choices=["all", "both", "sb_only", "ote_only", "fvg_only"])
+    ap.add_argument("--mode", default="all", choices=["all", "both", "opr_only", "ote_only", "fvg_only"])
     ap.add_argument("--sim_challenge", default="oui")
     ap.add_argument("--ftmo_mode", default="1phase", choices=["1phase", "2phases"])
     ap.add_argument("--use_best_ote", default="oui")
     ap.add_argument("--use_best_fvg", default="oui")
-    ap.add_argument("--use_best_sb", default="oui")
     ap.add_argument("--params_ote", default="")
     ap.add_argument("--params_fvg", default="")
-    ap.add_argument("--params_sb", default="")
-    ap.add_argument("--fvg_skip", default="USDCHF,BTCUSD,ETHUSD,XRPUSD,NAS100,USA500", help="Actifs ignorés par FVG en mode all/both")
-    ap.add_argument("--ote_skip", default="NAS100,USA500", help="Actifs ignorés par OTE en mode all/both")
+    ap.add_argument("--params_opr", default="")
+    ap.add_argument("--fvg_skip", default="USDCHF,BTCUSD,ETHUSD,XRPUSD,NAS100,USA500,US30,US100,US500", help="Actifs ignorés par FVG en mode all/both")
+    ap.add_argument("--ote_skip", default="NAS100,USA500,US30,US100,US500", help="Actifs ignorés par OTE en mode all/both")
     ap.add_argument("--outdir", default="results")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
 
-    forex = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
-    crypto = [s.strip().upper() for s in a.crypto.split(",") if s.strip()]
-    fvg_skip = {s.strip().upper() for s in a.fvg_skip.split(",") if s.strip()} if a.mode in ("both", "all") else set()
-    ote_skip = {s.strip().upper() for s in a.ote_skip.split(",") if s.strip()} if a.mode in ("both", "all") else set()
+    forex = [normalize_sym(s) for s in a.symbols.split(",") if s.strip()]
+    crypto = [normalize_sym(s) for s in a.crypto.split(",") if s.strip()]
+    fvg_skip = {normalize_sym(s) for s in a.fvg_skip.split(",") if s.strip()} if a.mode in ("both", "all") else set()
+    ote_skip = {normalize_sym(s) for s in a.ote_skip.split(",") if s.strip()} if a.mode in ("both", "all") else set()
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     p_ote = load_params(strategy_ote, os.path.join(here, "results", "best_params_ote.json") if a.use_best_ote == "oui" else "", a.params_ote)
     p_fvg = load_params(strategy_fvg, os.path.join(here, "results", "best_params_fvg.json") if a.use_best_fvg == "oui" else "", a.params_fvg)
-    p_sb = load_params(strategy_sb, os.path.join(here, "results", "best_params_sb.json") if a.use_best_sb == "oui" else "", a.params_sb)
-    tg(f"🚀 Backtest {a.mode} : {', '.join(forex + crypto)} depuis {a.start}\nOTE {a.risk_ote}% | FVG {a.risk_fvg}% | SB {a.risk_sb}%")
+    p_opr = load_params(strategy_opr, "", a.params_opr)
+
+    # Si on lance uniquement OPR et que seuls des forex étaient passés par erreur, s'assurer que les indices US sont inclus
+    if a.mode == "opr_only" and not any(s in INDICES_OPR for s in forex):
+        forex = ["NAS100", "USA500", "US30"]
+
+    tg(f"🚀 Backtest {a.mode} : {', '.join(forex + crypto)} depuis {a.start}\nOTE {a.risk_ote}% | FVG {a.risk_fvg}% | OPR {a.risk_opr}%")
 
     if a.mode == "fvg_only":
         todo = [("FVG", a.risk_fvg, run_fvg, p_fvg)]
     elif a.mode == "ote_only":
         todo = [("OTE", a.risk_ote, run_ote, p_ote)]
-    elif a.mode == "sb_only":
-        todo = [("SB", a.risk_sb, run_sb, p_sb)]
+    elif a.mode == "opr_only":
+        todo = [("OPR", a.risk_opr, run_opr, p_opr)]
     elif a.mode == "both":
         todo = [("FVG", a.risk_fvg, run_fvg, p_fvg), ("OTE", a.risk_ote, run_ote, p_ote)]
     else:
-        todo = [("FVG", a.risk_fvg, run_fvg, p_fvg), ("OTE", a.risk_ote, run_ote, p_ote), ("SB", a.risk_sb, run_sb, p_sb)]
+        todo = [("FVG", a.risk_fvg, run_fvg, p_fvg), ("OTE", a.risk_ote, run_ote, p_ote), ("OPR", a.risk_opr, run_opr, p_opr)]
 
-    allt = {"FVG": [], "OTE": [], "SB": []}
+    allt = {"FVG": [], "OTE": [], "OPR": []}
     viewer_trades = []
     recap = []
-    sb_session_recap = []
+    opr_setup_recap = []
     dl_start = min(a.start, "2021-01-01") if a.start else "2021-01-01"
 
     for sym in forex + crypto:
@@ -233,20 +248,22 @@ def main():
                 continue
             if name == "OTE" and sym in ote_skip:
                 continue
+            if name == "OPR" and sym not in INDICES_OPR and a.mode in ("all", "opr_only"):
+                continue
             try:
                 tr, eq = fn(P, sym, i0, i1, risk, fee, lev, p)
                 st = stats_of(tr, eq, risk_pct=risk)
                 txt = summary(sym, name, st, risk, fee)
                 print(txt, flush=True)
                 recap.append(f"{sym} {name}: {st['return_pct']:+.1f}% | {st['trades']}t | {st['avg_r']:+.2f}R | DD {st['max_dd_pct']:.1f}%")
-                if name == "SB" and st.get("by_session"):
-                    sess_parts = []
-                    for sname in strategy_sb.SESSION_ORDER:
-                        sd = st["by_session"][sname]
-                        sess_parts.append(
-                            f"  • {sname:6s}: {sd['return_pct']:+6.1f}% | DD {sd['max_dd_pct']:5.1f}% | {sd['trades']:3d}t | WR {sd['win_pct']:4.1f}% | {sd['avg_r']:+.2f}R ({sd['sum_r']:+.1f}R)"
+                if name == "OPR" and st.get("by_setup"):
+                    setup_parts = []
+                    for sname in strategy_opr.SETUP_ORDER:
+                        sd = st["by_setup"][sname]
+                        setup_parts.append(
+                            f"  • {sname:13s}: {sd['return_pct']:+6.1f}% | DD {sd['max_dd_pct']:5.1f}% | {sd['trades']:3d}t | WR {sd['win_pct']:4.1f}% | {sd['avg_r']:+.2f}R ({sd['sum_r']:+.1f}R)"
                         )
-                    sb_session_recap.append(f"{sym} Silver Bullet par session (risque {risk}%) :\n" + "\n".join(sess_parts))
+                    opr_setup_recap.append(f"{sym} OPR par setup (risque {risk}%) :\n" + "\n".join(setup_parts))
                 if len(tr):
                     tr = tr.copy()
                     tr.insert(0, "symbol", sym)
@@ -276,20 +293,20 @@ def main():
         if len(d):
             d.to_csv(os.path.join(a.outdir, f"ALL_{k}_trades.csv"), index=False)
 
-    # Bilan global par session pour Silver Bullet (toutes paires confondues)
-    if len(dfs["SB"]) > 0:
-        global_sess = strategy_sb.session_stats(dfs["SB"], a.risk_sb, CAPITAL)
-        g_lines = [f"🌍 TOTAL SILVER BULLET PAR SESSION (toutes paires, risque {a.risk_sb}%) :"]
-        for sname in strategy_sb.SESSION_ORDER:
-            sd = global_sess[sname]
+    # Bilan global par setup pour OPR (tous indices confondus)
+    if len(dfs["OPR"]) > 0:
+        global_setup = strategy_opr.setup_stats(dfs["OPR"], a.risk_opr, CAPITAL)
+        g_lines = [f"🌍 TOTAL OPR PAR SETUP (tous indices, risque {a.risk_opr}%) :"]
+        for sname in strategy_opr.SETUP_ORDER:
+            sd = global_setup[sname]
             g_lines.append(
-                f"  • {sname:6s}: {sd['return_pct']:+6.1f}% | DD {sd['max_dd_pct']:5.1f}% | {sd['trades']:4d}t | WR {sd['win_pct']:4.1f}% | {sd['avg_r']:+.2f}R (cumul {sd['sum_r']:+.1f}R)"
+                f"  • {sname:13s}: {sd['return_pct']:+6.1f}% | DD {sd['max_dd_pct']:5.1f}% | {sd['trades']:4d}t | WR {sd['win_pct']:4.1f}% | {sd['avg_r']:+.2f}R (cumul {sd['sum_r']:+.1f}R)"
             )
-        sb_session_recap.append("\n".join(g_lines))
+        opr_setup_recap.append("\n".join(g_lines))
 
     full_recap = "📋 RÉCAP\n" + "\n".join(recap)
-    if sb_session_recap:
-        full_recap += "\n\n🕒 BILAN PAR SESSION (London 3h-4h | NY AM 10h-11h | NY PM 14h-15h NY)\n" + "\n\n".join(sb_session_recap)
+    if opr_setup_recap:
+        full_recap += "\n\n🕒 BILAN OPR PAR SETUP (Cassure RR=2.5 | Réintégration RR>=2.0, 15h30-19h30 FR)\n" + "\n\n".join(opr_setup_recap)
     tg(full_recap)
     print(full_recap)
 
@@ -297,24 +314,24 @@ def main():
         lines = []
         for fmode in ("1phase", "2phases"):
             lines.append(f"🎯 Simulation FTMO {fmode} (départs tous les 3 j, pire cas intra-trade, superposition active)")
-            # 1) Silver Bullet seule
-            if len(dfs["SB"]) > 0:
-                for rsb in (a.risk_sb, a.risk_sb * 0.75, a.risk_sb * 1.5):
-                    res = sim_ch.simulate_challenge(dfs["SB"], CAPITAL, rsb, fmode, 3)
+            # 1) OPR seule
+            if len(dfs["OPR"]) > 0:
+                for ropr in (a.risk_opr, a.risk_opr * 0.75, a.risk_opr * 1.5):
+                    res = sim_ch.simulate_challenge(dfs["OPR"], CAPITAL, ropr, fmode, 3)
                     lines.append(
-                        f"[SB seule {rsb:g}%] réussite {res['success_pct']:.0f}% | échec DD jour {res['breach_daily_pct']:.0f}% / DD total "
+                        f"[OPR seule {ropr:g}%] réussite {res['success_pct']:.0f}% | échec DD jour {res['breach_daily_pct']:.0f}% / DD total "
                         f"{res['breach_total_pct']:.0f}% | non finis {res['timeout_pct']:.0f}% | durée médiane {res['median_days']:.0f} j | N={res['n_simulations']}"
                     )
-            # 2) FVG + OTE + Silver Bullet (si tous présents)
-            if len(dfs["OTE"]) > 0 and len(dfs["FVG"]) > 0 and len(dfs["SB"]) > 0:
+            # 2) FVG + OTE + OPR (si tous présents)
+            if len(dfs["OTE"]) > 0 and len(dfs["FVG"]) > 0 and len(dfs["OPR"]) > 0:
                 for mult in (1.0, 0.75, 1.5):
-                    ro, rf, rsb = a.risk_ote * mult, a.risk_fvg * mult, a.risk_sb * mult
-                    res = sim_ch.simulate_combined(dfs["OTE"], dfs["FVG"], CAPITAL, ro, rf, fmode, 3, trades_sb=dfs["SB"], risk_sb=rsb)
+                    ro, rf, ropr = a.risk_ote * mult, a.risk_fvg * mult, a.risk_opr * mult
+                    res = sim_ch.simulate_combined(dfs["OTE"], dfs["FVG"], CAPITAL, ro, rf, fmode, 3, trades_sb=dfs["OPR"], risk_sb=ropr)
                     lines.append(
-                        f"[OTE {ro:g}% + FVG {rf:g}% + SB {rsb:g}%] réussite {res['success_pct']:.0f}% | échec DD jour {res['breach_daily_pct']:.0f}% / DD total "
+                        f"[OTE {ro:g}% + FVG {rf:g}% + OPR {ropr:g}%] réussite {res['success_pct']:.0f}% | échec DD jour {res['breach_daily_pct']:.0f}% / DD total "
                         f"{res['breach_total_pct']:.0f}% | non finis {res['timeout_pct']:.0f}% | durée médiane {res['median_days']:.0f} j | N={res['n_simulations']}"
                     )
-            # 3) FVG + OTE seuls (référence sans SB)
+            # 3) FVG + OTE seuls (référence sans OPR)
             if len(dfs["OTE"]) > 0 and len(dfs["FVG"]) > 0:
                 for mult in (1.0, 0.75, 1.5):
                     ro, rf = a.risk_ote * mult, a.risk_fvg * mult

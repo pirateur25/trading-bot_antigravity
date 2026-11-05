@@ -15,8 +15,8 @@ label{display:flex;gap:3px;align-items:center;color:var(--mut)}
 #drop{position:fixed;inset:0;background:rgba(41,98,255,.25);display:none;align-items:center;justify-content:center;font-size:22px;z-index:9}
 </style></head><body>
 <div class="bar"><button id="load" style="background:#2962ff;border-color:#2962ff">📂 Charger trades (JSON)</button><input type="file" id="file" accept=".json" multiple hidden>
-<select id="strat"><option value="">Toutes stratégies</option><option>FVG</option><option>OTE</option><option>SB</option></select>
-<select id="sess"><option value="">Toutes sessions</option><option>London</option><option>NY AM</option><option>NY PM</option></select>
+<select id="strat"><option value="">Toutes stratégies</option><option>FVG</option><option>OTE</option><option>OPR</option></select>
+<select id="sess"><option value="">Tous setups OPR</option><option>Cassure</option><option>Reintegration</option></select>
 <select id="pair"></select><button id="prev">◀</button><select id="sel"></select><button id="next">▶</button><span id="tfs"></span></div>
 <div class="bar" id="opts"><label><input type="checkbox" id="cZ" checked>Zones (FVG HTF / OTE / Fib)</label><label><input type="checkbox" id="cM" checked>Structure (MSS, jambe)</label><label><input type="checkbox" id="cF" checked>FVG d'entrée</label><label><input type="checkbox" id="cB" checked>BE</label><label><input type="checkbox" id="cBB" checked>Bollinger (20, 2σ)</label>
 <label>contexte avant <select id="ctx"><option value="3">3 j</option><option value="7">7 j</option><option value="14" selected>14 j</option><option value="30">30 j</option></select></label>
@@ -77,7 +77,7 @@ function show(){[...tfsEl.children].forEach(b=>b.classList.toggle('on',+b.datase
  const x=LIST[+$('sel').value];extra.forEach(s=>chart.removeSeries(s));extra=[];
  if(!x){cs.setData([]);boxes.set([]);cs.setMarkers([]);if(TRADES.length)$('info').textContent=curPair?'Aucun trade pour ce filtre.':'Bougies de cette paire absentes du visualiseur (relance « viewer_export.py build » avec la paire).';return}
  if(!curPair){cs.setData([]);boxes.set([]);cs.setMarkers([]);$('info').textContent=`Pas de bougies installées pour ${x.sym} : relance viewer_export.py build --symbols ...,${x.sym}`;return}
- const short=x.side==='short',ote=x.strat==='OTE',sb=x.strat==='SB';
+ const short=x.side==='short',ote=x.strat==='OTE',sb=x.strat==='OPR'||x.strat==='SB';
  const starts=ote?[x.rlt,x.rht,x.llt,x.lht,x.bt,x.ts]:sb?[x.zt,x.ft1,x.ts]:[x.h1t,x.ft1,x.ts,Math.max(x.zt||0,x.ts-CTX*86400)];
  const left=Math.min(...starts.filter(v=>v!=null),x.te),t0=Math.max(left,x.ts-CTX*86400*(ote||sb?1:99))-6*3600,t1=x.tx+6*3600;
  const data=resample(t0-86400,t1+86400);cs.setData(data);const first=data.length?data[0].time:snap(t0);const bx=[];
@@ -86,10 +86,10 @@ function show(){[...tfsEl.children].forEach(b=>b.classList.toggle('on',+b.datase
  bx.push({t1:snap(x.te),t2:snap(x.tx),p1:x.entry,p2:x.tp,c:'rgba(38,166,154,0.22)'});bx.push({t1:snap(x.te),t2:snap(x.tx),p1:x.entry,p2:x.sl,c:'rgba(239,83,80,0.22)'});
  const mk=[];
  if(sb){
-  if($('cZ').checked&&x.zlo!=null&&x.zt!=null){const zt=Math.max(snap(x.zt),first),zt2=snap(x.zt2||x.te);bx.push({t1:zt,t2:zt2,p1:x.zlo,p2:x.zhi,c:'rgba(124,77,255,0.16)'});line(zt,zt2,x.zlo,'#7c4dff',1,2);line(zt,zt2,x.zhi,'#7c4dff',1,2,x.sess||'Session D-F')}
+  if($('cZ').checked&&x.zlo!=null&&x.zt!=null){const zt=Math.max(snap(x.zt),first),zt2=snap(x.zt2||x.tx);bx.push({t1:zt,t2:zt2,p1:x.zlo,p2:x.zhi,c:'rgba(124,77,255,0.16)'});line(zt,zt2,x.zlo,'#7c4dff',1,2,'OPR Low');line(zt,zt2,x.zhi,'#7c4dff',1,2,'OPR High')}
   if($('cF').checked&&x.fl!=null&&x.ft1!=null){bx.push({t1:snap(x.ft1),t2:snap(x.tx),p1:x.fl,p2:x.fh,c:'rgba(224,168,0,0.28)'});line(x.ft1,x.tx,x.fl,'#e0a800',1,2);line(x.ft1,x.tx,x.fh,'#e0a800',1,2,'FVG 5m')}
   const dn=short?'belowBar':'aboveBar';
-  mk.push({time:snap(x.ts),position:dn,color:'#e0a800',shape:short?'arrowDown':'arrowUp',text:'FVG '+(x.sess||'SB')});
+  mk.push({time:snap(x.ts),position:dn,color:'#e0a800',shape:short?'arrowDown':'arrowUp',text:'OPR '+(x.sess||'')});
  }else if(!ote){
   if($('cZ').checked&&x.zlo!=null){const zt=Math.max(snap(x.zt),first);bx.push({t1:zt,t2:snap(x.tx),p1:x.zlo,p2:x.zhi,c:'rgba(124,77,255,0.16)'});line(zt,x.tx,x.zlo,'#7c4dff',1,2);line(zt,x.tx,x.zhi,'#7c4dff',1,2,'Zone HTF')}
   if($('cF').checked&&x.fl!=null)bx.push({t1:snap(x.ft1),t2:snap(x.tx),p1:x.fl,p2:x.fh,c:'rgba(224,168,0,0.25)'});

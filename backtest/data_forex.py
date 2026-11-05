@@ -102,6 +102,8 @@ def resolve_data_path(symbol, datadir="data"):
             prefixes = ["USA500", "US500", "SPX500", "SP500"]
         elif sym in ("NAS100", "US100"):
             prefixes = ["NAS100", "USATECH", "USTEC", "US100"]
+        elif sym in ("US30", "DJ30"):
+            prefixes = ["US30", "USA30", "DJ30", "WS30"]
         for fname in sorted(os.listdir(datadir)):
             up = fname.upper()
             if any(up.startswith(pref) for pref in prefixes) and (up.endswith(".CSV.GZ") or up.endswith(".CSV")):

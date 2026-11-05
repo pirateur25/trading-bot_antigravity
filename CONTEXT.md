@@ -1,25 +1,17 @@
 # Contexte du projet (reprise de conversation)
 
 Dépôt : `/home/pirateur25/Documents/Trading/trading-bot_antigravity` (Linux). Réponses en français, concises.
-Backtests lancés sur GitHub Actions (workflow `.github/workflows/backtest.yml`), résultats via Telegram. Terminal local possible uniquement si le workspace est ouvert sur ce dossier.
+Backtests lancés sur GitHub Actions (workflow `.github/workflows/backtest.yml`), résultats via Telegram.
 
 ## Stratégies
-- **OTE** (`backtest/strategy_ote.py`) et **FVG** (`backtest/strategy_fvg.py`) : optimisées Optuna sur 12 ans, params dans `results/best_params_ote.json` / `best_params_fvg.json`.
-- **Silver Bullet SB** (`backtest/strategy_sb.py`) : stratégie fixe 5m, sessions heure NY (London 3h-4h, NY AM 10h-11h, NY PM 14h-15h), 1re FVG 5m de la fenêtre [D,F), limit sur le bord du gap, SL sur la bougie centrale, TP RR=2 par défaut (`rr`), ordre retiré à F.
-- Récap par session (London / NY AM / NY PM) par paire et global dans `backtest/run_backtest.py`.
-- Simulation FTMO (`backtest/sim_challenge.py`) avec superposition des trades, SB seule / OTE+FVG+SB / OTE+FVG.
+- **OTE** (`backtest/strategy_ote.py`) et **FVG** (`backtest/strategy_fvg.py`) : optimisées Optuna sur 12 ans (Forex : EURUSD, GBPUSD, USDJPY), params dans `results/best_params_ote.json` / `best_params_fvg.json`.
+- **OPR — Opening Price Range** (`backtest/strategy_opr.py`) : stratégie M5 sur les indices US (`NAS100` / `US100`, `USA500` / `US500`, `US30`) :
+  - **Zone OPR** : plus haut (`OPR High`) et plus bas (`OPR Low`) mèche comprise de la bougie M15 de **15h30 → 15h45 heure française** (`Europe/Paris`, soit les 3 bougies M5 15h30, 15h35, 15h40).
+  - **Filtre de tendance H1 obligatoire (`mm20_50`)** : haussière si `MM20 > MM50` et `clôture H1 en cours > MM50` ; baissière en miroir (`MM20 < MM50` et `clôture < MM50`).
+  - **1 seul trade / ordre maximum par jour et par indice**, pris entre 15h45 et **19h30 heure française** :
+    1. **Setup Cassure** : clôture M5 au-dessus de l'`OPR High` (haussier) → BUY LIMIT sur `OPR High`, SL sous la bougie M5 de cassure, TP fixe à `RR = 2.5` (et miroir en baissier sous l'`OPR Low`).
+    2. **Setup Réintégration** : sortie préalable sous l'`OPR Low` puis clôture M5 à l'intérieur de l'OPR (`OPR Low <= close <= OPR High`) → BUY LIMIT sur `OPR Low`, SL sous la bougie M5 qui réintègre, TP sur `OPR High`, valide uniquement si `RR >= 2.0` (et miroir en baissier).
+  - **Gestion de l'ordre et du trade** : ordre limite annulé s'il n'est pas déclenché avant que le prix atteigne `+1 R` ou à `19h30` ; passage à **Break-Even à `+1 R`** (`be_rr = 1.0`).
+- Simulation FTMO (`backtest/sim_challenge.py`) avec superposition des trades : OPR seule / OTE+FVG+OPR / OTE+FVG.
 - Visualiseur : `viewer/template.html` -> `viewer/viewer.html` via
-  `python3 backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDJPY,NAS100,USA500 --out viewer/viewer.html` (fonctionne sans numpy).
-
-## Données (`data/`)
-- EURUSD, GBPUSD, USDJPY, NAS100, USA500 en `.csv.gz` 5m. Lecture tolérante aux en-têtes (JForex/Dukascopy, timestamps ms) dans `backtest/data_forex.py::load_csv`; renommage auto des fichiers `usatech*`/`USA500*` -> `NAS100`/`USA500` (sauf si le nom cible existe déjà).
-- Coûts/levier indices dans `backtest/realism.py` (NAS100, USA500).
-
-## Problème en cours
-Nouveau fichier NAS100 (depuis 2015, `usatechidxusd-m5-bid-...`) donne SB NAS100 -35.9% (750t, -0.08R) contre +78.7% (323t) avec l'ancien fichier.
-Constats (via les `viewer_trades.json`) :
-- Ancien fichier : prix ~1000-1500 (pas du vrai NAS100, ~17x trop bas), bougies bien plus larges, 0 trade NY PM, TP à 3R (donc run avec rr=3 ou ancienne version).
-- Nouveau : prix ~17000-21000, TP à 2R, 3 sessions.
-- Le premier trade du nouveau run est le 2025-01-02 : il n'a donc PAS utilisé 2015 (vérifier input `start` du workflow, et que le fichier 2015 est bien renommé en `data/NAS100.csv.gz` + commité).
-À faire : `ls -la data`, `zcat data/NAS100.csv.gz | head -3 / tail -2`, `git status`; relancer avec `start=2015-01-01`, `params_sb` vide (RR2) puis `rr=3` pour comparer.
-
+  `python3 backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30 --out viewer/viewer.html` (fonctionne sans numpy).

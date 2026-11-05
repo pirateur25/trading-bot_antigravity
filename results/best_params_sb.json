@@ -1,0 +1,12 @@
+{
+ "rr": 3.5,
+ "sessions": "London,NY AM,NY PM",
+ "side": "both",
+ "be_rr": 1.0,
+ "trend_filter": 1,
+ "trend_tf": "1h",
+ "trend_mode": "both",
+ "ma_len": 20,
+ "ma_slope_bars": 5,
+ "zz_atr_trend": 5.0
+}

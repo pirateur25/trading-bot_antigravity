@@ -191,7 +191,7 @@ def trades_to_json(tr, strat, sym, be_rr=0.0):
             x.update(ts=ep(r["signal_time"]), tf=r["conf_tf"], h1p=nz(r["mss_h1"]), h1t=ep(r["h1_time"]), h2p=nz(r["mss_h2"]), h2t=ep(r["h2_time"]),
                      l2p=nz(r["mss_l2"]), l2t=ep(r["l2_time"]), zlo=nz(r["zone_lo"]), zhi=nz(r["zone_hi"]), zt=ep(r["zone_form"]),
                      fl=nz(r["fvg_lo"]), fh=nz(r["fvg_hi"]), ft1=ep(r["fvg_t1"]))
-        elif strat == "SB":
+        elif strat in ("OPR", "SB"):
             x.update(ts=ep(r["signal_time"]), tf=r.get("conf_tf", "5m"), sess=r.get("session", ""),
                      zlo=nz(r.get("zone_lo")), zhi=nz(r.get("zone_hi")), zt=ep(r.get("zone_form")), zt2=ep(r.get("zone_end")),
                      fl=nz(r.get("fvg_lo")), fh=nz(r.get("fvg_hi")), ft1=ep(r.get("fvg_t1")))
@@ -238,7 +238,7 @@ def build(symbols, datadir, out, since=None):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["build"])
-    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100,USA500")
+    ap.add_argument("--symbols", default="EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30")
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--out", default="viewer/viewer.html")
     ap.add_argument("--since", default="", help="ne garder que les bougies depuis cette date (réduit la taille), ex. 2023-01-01")
