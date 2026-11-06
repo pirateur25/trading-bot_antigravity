@@ -194,7 +194,16 @@ def trades_to_json(tr, strat, sym, be_rr=0.0):
         elif strat in ("OPR", "SB"):
             x.update(ts=ep(r["signal_time"]), tf=r.get("conf_tf", "5m"), sess=r.get("session", ""),
                      zlo=nz(r.get("zone_lo")), zhi=nz(r.get("zone_hi")), zt=ep(r.get("zone_form")), zt2=ep(r.get("zone_end")),
-                     fl=nz(r.get("fvg_lo")), fh=nz(r.get("fvg_hi")), ft1=ep(r.get("fvg_t1")))
+                     fl=nz(r.get("fvg_lo")), fh=nz(r.get("fvg_hi")), ft1=ep(r.get("fvg_t1")),
+                     ous=nz(r.get("open_us")), vix=nz(r.get("vix")), em=nz(r.get("em_brut")),
+                     aup=nz(r.get("a_up")), adn=nz(r.get("a_dn")),
+                     bup=nz(r.get("b_up")), bdn=nz(r.get("b_dn")),
+                     cup=nz(r.get("c_up")), cdn=nz(r.get("c_dn")),
+                     mup=nz(r.get("mean_up")), sup=nz(r.get("std_up")),
+                     mdn=nz(r.get("mean_dn")), sdn=nz(r.get("std_dn")),
+                     sl20=nz(r.get("sl_20pct")),
+                     pdh=nz(r.get("pdh")), pdl=nz(r.get("pdl")),
+                     psh=nz(r.get("psh")), psl=nz(r.get("psl")))
         else:
             g = lambda k: r.get(k)  # noqa: E731
             x.update(ts=ep(g("signal_time")) or ep(r["entry_time"]), tf=str(g("confirm") or ""), rh=nz(g("fib_range_high")), rht=ep(g("fib_range_high_time")),

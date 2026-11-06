@@ -5,22 +5,23 @@ Backtests lancés sur GitHub Actions (workflow `.github/workflows/backtest.yml`)
 
 ## Stratégies
 - **OTE** (`backtest/strategy_ote.py`) et **FVG** (`backtest/strategy_fvg.py`) : optimisées Optuna sur 12 ans (Forex : EURUSD, GBPUSD, USDJPY), params dans `results/best_params_ote.json` / `best_params_fvg.json`.
-- **OPR — Opening Price Range** (`backtest/strategy_opr.py`) : stratégie M5 sur les indices US (`NAS100` / `US100`, `USA500` / `US500`, `US30`) :
-  - **Zone OPR** : plus haut (`OPR High`) et plus bas (`OPR Low`) mèche comprise de la bougie M15 de **15h30 → 15h45 heure française** (`Europe/Paris`, soit les 3 bougies M5 15h30, 15h35, 15h40).
+- **OPR + RV3 — Opening Price Range & Expected Move Calibré (Romain Bailleul)** (`backtest/strategy_opr.py`, optimisateur Walk-Forward `backtest/optimize_opr.py`, workflow `.github/workflows/optimize_opr.yml`) : stratégie M5 sur les indices US (`NAS100` / `US100`, `USA500` / `US500`, `US30`) :
+  - **Zone OPR (non négociable)** : plus haut (`OPR High`) et plus bas (`OPR Low`) mèche comprise de la bougie M15 de **15h30 → 15h45 heure française** (`Europe/Paris`, soit les 3 bougies M5 15h30, 15h35, 15h40).
   - **Filtre de tendance H1 obligatoire (`mm20_50`)** : haussière si `MM20 > MM50` et `clôture H1 en cours > MM50` ; baissière en miroir (`MM20 < MM50` et `clôture < MM50`).
   - **1 seul trade / ordre maximum par jour et par indice**, pris entre 15h45 et **19h30 heure française** :
     1. **Setup Cassure** : clôture M5 au-dessus de l'`OPR High` (haussier) → BUY LIMIT sur `OPR High` (et miroir en baissier sous l'`OPR Low`).
-    2. **Setup Réintégration** : sortie préalable sous l'`OPR Low` puis clôture M5 à l'intérieur de l'OPR (`OPR Low <= close <= OPR High`) → BUY LIMIT sur `OPR Low`, TP sur `OPR High`, valide uniquement si `RR >= 2.5` (et miroir en baissier).
-  - **Placement du SL selon l'indice de volatilité associé (`VXNCLS-US100`, `VIXCLS-US500`, `VXDCLS-US30`)** :
-    - Si `indice > 20` : SL sous la mèche de la bougie M5 de signal moins l'`ATR(14) H1` (et `+ ATR(14) H1` en short).
-    - Si `15 <= indice <= 20` : distance SL = `max(inv, plancher_actif)` où `inv` = distance entrée ↔ mèche bougie signal, et plancher = **80 pts** (`US30`), **70 pts** (`NAS100`/`US100`), **50 pts** (`USA500`/`US500`).
-    - Si `indice < 15` : SL classique sous/au-dessus de la mèche de la bougie M5 de signal.
-  - **Filtre d'invalidation par résistance / support avant `+1 R`** : trade annulé s'il existe une résistance non mitigée entre l'entrée et `+1 R` parmi :
-    - *Previous Daily High / Low* (`PDH` / `PDL`),
-    - *Haut / Bas de session précédente* (`00h00 -> 15h30` heure FR : Asie + Londres),
-    - *FVG H1* opposée non mitigée.
-  - **Take Profit (TP)** : `2.5 R` minimal, ou étendu sur la première résistance non mitigée située au-delà de `2.5 R` (sur le setup Cassure).
-  - **Gestion de l'ordre et du trade** : ordre limite annulé s'il n'est pas déclenché avant que le prix atteigne `+1 R` ou à `19h30` ; passage à **Break-Even à `+1 R`** (`be_rr = 1.0`).
+    2. **Setup Réintégration** : sortie préalable sous l'`OPR Low` puis clôture M5 à l'intérieur de l'OPR (`OPR Low <= close <= OPR High`) → BUY LIMIT sur `OPR Low`, TP sur `OPR High` (et miroir en baissier).
+  - **Modèle RV3 (calibré sur 60 séances US `15h30 -> 22h00` FR)** :
+    - **Ligne A (`EM_brut`)** : `EM_brut = Open_15h30 * (VIX / 100) / 16` (`VXNCLS-US100`, `VIXCLS-US500`, `VXDCLS-US30`).
+    - **Ligne B (Moyenne calibrée 60j)** : `B_up = Open + mean(r_up) * EM_brut`, `B_dn = Open - mean(r_dn) * EM_brut`.
+    - **Ligne C (Enveloppe +1σ 60j)** : `C_up = Open + (mean(r_up) + std(r_up)) * EM_brut`, `C_dn = Open - (mean(r_dn) + std(r_dn)) * EM_brut`.
+    - **Seuil de bruit (20% EM)** : `Seuil_Bruit = em_noise_pct * EM_brut` (`0.20 * EM_brut` par défaut).
+  - **Sélection dynamique du SL (`SL_distance`)** :
+    - `VIX > 20` (Stress) : `SL_distance = max(SL_M5, sl_atr_mult * ATR_H1_14)` (ou `add_atr` selon levier Optuna).
+    - `15 <= VIX <= 20` (Standard) : `SL_distance = max(SL_M5, Seuil_Bruit, Plancher_Indice)` avec plancher = **80 pts** (`US30`), **70 pts** (`NAS100`/`US100`), **50 pts** (`USA500`/`US500`).
+    - `VIX < 15` (Euphorie) : `SL_distance = max(SL_M5, Seuil_Bruit)`.
+  - **Filtre d'espace disponible avant BE (`res_be_mode`) & TP (`rv3_tp_mode`)** : annulation si obstacle (`B`, `C`, `PDH/PDL`, `PSH/PSL`, `FVG H1`) avant `+be_rr * SL_distance` ; gestion du TP par rapport aux bornes RV3 (`B`/`C`) et résistances.
+  - **Visualiseur RV3** (`viewer/template.html` & `viewer/viewer.html`) : affiche l'Open US (jaune), les lignes A (gris), B (cyan/rouge), C (teal/rouge foncé), les zones ombrées `B -> C` et le tableau complet de calibration RV3 en bas à droite.
 - Simulation FTMO (`backtest/sim_challenge.py`) avec superposition des trades : OPR seule / OTE+FVG+OPR / OTE+FVG.
 - Visualiseur : `viewer/template.html` -> `viewer/viewer.html` via
   `python3 backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30 --out viewer/viewer.html` (fonctionne sans numpy).

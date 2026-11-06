@@ -65,7 +65,51 @@
     #chart {
       flex: 1;
       min-height: 320px;
-      border: 1px solid var(--bd)
+      border: 1px solid var(--bd);
+      position: relative
+    }
+
+    #rv3 {
+      position: absolute;
+      right: 68px;
+      bottom: 34px;
+      z-index: 5;
+      background: rgba(19, 23, 34, 0.92);
+      border: 1px solid #2b3140;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #d1d4dc;
+      display: none;
+      pointer-events: none;
+      min-width: 245px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45)
+    }
+
+    #rv3 .r-hdr {
+      display: flex;
+      justify-content: space-between;
+      font-weight: 600;
+      color: #4dd0e1;
+      border-bottom: 1px solid #2b3140;
+      padding-bottom: 3px;
+      margin-bottom: 4px
+    }
+
+    #rv3 .r-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px
+    }
+
+    #rv3 .r-lbl {
+      color: #8a94a6
+    }
+
+    #rv3 .r-val {
+      font-variant-numeric: tabular-nums;
+      font-weight: 500
     }
 
     #info {
@@ -113,18 +157,18 @@
       Fib)</label><label><input type="checkbox" id="cM" checked>Structure (MSS, jambe)</label><label><input
         type="checkbox" id="cF" checked>FVG d'entrée</label><label><input type="checkbox" id="cB"
         checked>BE</label><label><input type="checkbox" id="cBB" checked>Bollinger (20, 2σ)</label><label><input
-        type="checkbox" id="cMM" checked>MM 20 / 50 (1h)</label>
+        type="checkbox" id="cMM" checked>MM 20 / 50 (1h)</label><label><input
+        type="checkbox" id="cRV3" checked>RV3 (EM / B / C)</label>
     <label>contexte avant <select id="ctx">
         <option value="3">3 j</option>
         <option value="7">7 j</option>
         <option value="14" selected>14 j</option>
         <option value="30">30 j</option>
       </select></label>
-    <span id="leg">FVG : violet = zone HTF · orange = MSS · jaune = FVG d'entrée — OTE : bleu = range Fib · violet =
-      zone OTE · orange = jambe/MSS — vert/rouge = TP/SL</span>
+    <span id="leg">FVG : violet = zone HTF · orange = MSS · jaune = FVG d'entrée — OTE : bleu = range Fib — OPR : jaune = Open US · cyan/rouge = RV3 (B/A/C)</span>
   </div>
   <div id="info">Clique sur « Charger trades » (ou glisse ici le fichier viewer_trades.json reçu sur Telegram).</div>
-  <div id="chart"></div>
+  <div id="chart"><div id="rv3"></div></div>
   <div id="drop">Dépose le fichier viewer_trades.json</div>
   <script
     src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -222,7 +266,7 @@
     }
     $('strat').onchange = refresh; $('sess').onchange = refresh; $('pair').onchange = fillSel; $('sel').onchange = show;
     $('prev').onclick = () => { if ($('sel').selectedIndex > 0) { $('sel').selectedIndex--; show() } }; $('next').onclick = () => { if ($('sel').selectedIndex < LIST.length - 1) { $('sel').selectedIndex++; show() } };
-    ['cZ', 'cM', 'cF', 'cB', 'cBB', 'cMM'].forEach(i => $(i).onchange = show); $('ctx').onchange = () => { CTX = +$('ctx').value; show() };
+    ['cZ', 'cM', 'cF', 'cB', 'cBB', 'cMM', 'cRV3'].forEach(i => $(i).onchange = show); $('ctx').onchange = () => { CTX = +$('ctx').value; show() };
     const snap = t => Math.floor(t / tf) * tf;
     function resample(a, b) {
       const out = []; let c = null; for (const r of BARS) {
@@ -242,7 +286,7 @@
     }
     function show() {
       [...tfsEl.children].forEach(b => b.classList.toggle('on', +b.dataset.s === tf));
-      const x = LIST[+$('sel').value]; extra.forEach(s => chart.removeSeries(s)); extra = [];
+      const x = LIST[+$('sel').value]; extra.forEach(s => chart.removeSeries(s)); extra = []; $('rv3').style.display = 'none';
       if (!x) { cs.setData([]); boxes.set([]); cs.setMarkers([]); if (TRADES.length) $('info').textContent = curPair ? 'Aucun trade pour ce filtre.' : 'Bougies de cette paire absentes du visualiseur (relance « viewer_export.py build » avec la paire).'; return }
       if (!curPair) { cs.setData([]); boxes.set([]); cs.setMarkers([]); $('info').textContent = `Pas de bougies installées pour ${x.sym} : relance viewer_export.py build --symbols ...,${x.sym}`; return }
       const short = x.side === 'short', ote = x.strat === 'OTE', sb = x.strat === 'OPR' || x.strat === 'SB';
@@ -270,7 +314,46 @@
       bx.push({ t1: snap(x.te), t2: snap(x.tx), p1: x.entry, p2: x.tp, c: 'rgba(38,166,154,0.22)' }); bx.push({ t1: snap(x.te), t2: snap(x.tx), p1: x.entry, p2: x.sl, c: 'rgba(239,83,80,0.22)' });
       const mk = [];
       if (sb) {
-        if ($('cZ').checked && x.zlo != null && x.zt != null) { const zt = Math.max(snap(x.zt), first), zt2 = snap(x.zt2 || x.tx); bx.push({ t1: zt, t2: zt2, p1: x.zlo, p2: x.zhi, c: 'rgba(124,77,255,0.16)' }); line(zt, zt2, x.zlo, '#7c4dff', 1, 2, 'OPR Low'); line(zt, zt2, x.zhi, '#7c4dff', 1, 2, 'OPR High') }
+        const zt = Math.max(snap(x.zt || x.ts), first), zt2 = snap(Math.max(x.zt2 || 0, x.tx));
+        if ($('cZ').checked && x.zlo != null && x.zt != null) {
+          bx.push({ t1: zt, t2: zt2, p1: x.zlo, p2: x.zhi, c: 'rgba(124,77,255,0.16)' });
+          line(zt, zt2, x.zlo, '#7c4dff', 1, 2, 'OPR Low'); line(zt, zt2, x.zhi, '#7c4dff', 1, 2, 'OPR High');
+          if (x.pdh != null) line(zt, zt2, x.pdh, '#ab47bc', 1, 3, 'PDH');
+          if (x.pdl != null) line(zt, zt2, x.pdl, '#ab47bc', 1, 3, 'PDL');
+          if (x.psh != null) line(zt, zt2, x.psh, '#7e57c2', 1, 3, 'PSH');
+          if (x.psl != null) line(zt, zt2, x.psl, '#7e57c2', 1, 3, 'PSL');
+        }
+        if ($('cRV3').checked && x.em != null && x.ous != null) {
+          line(zt, zt2, x.ous, '#e6c229', 1, 0, 'Open US');
+          if (x.bup != null && x.cup != null) {
+            bx.push({ t1: zt, t2: zt2, p1: x.bup, p2: x.cup, c: 'rgba(0, 188, 212, 0.14)' });
+            line(zt, zt2, x.bup, '#00bcd4', 2, 0, 'RV3 B+ (Moy)');
+            line(zt, zt2, x.cup, '#00838f', 1, 0, 'RV3 C+ (+1σ)');
+          }
+          if (x.aup != null) line(zt, zt2, x.aup, '#788296', 1, 2, 'RV3 A+ (EM)');
+          if (x.bdn != null && x.cdn != null) {
+            bx.push({ t1: zt, t2: zt2, p1: x.bdn, p2: x.cdn, c: 'rgba(239, 83, 80, 0.14)' });
+            line(zt, zt2, x.bdn, '#ef5350', 2, 0, 'RV3 B- (Moy)');
+            line(zt, zt2, x.cdn, '#c62828', 1, 0, 'RV3 C- (+1σ)');
+          }
+          if (x.adn != null) line(zt, zt2, x.adn, '#788296', 1, 2, 'RV3 A- (EM)');
+          const vName = (x.sym === 'NAS100' || x.sym === 'US100') ? 'CBOE:VXN' : (x.sym === 'US30' ? 'CBOE:VXD' : 'CBOE:VIX');
+          const dBup = (x.bup != null ? (x.bup - x.ous).toFixed(2) : '-'), dBdn = (x.bdn != null ? (x.ous - x.bdn).toFixed(2) : '-');
+          const dCup = (x.cup != null ? (x.cup - x.ous).toFixed(2) : '-'), dCdn = (x.cdn != null ? (x.ous - x.cdn).toFixed(2) : '-');
+          const sl20 = (x.sl20 != null ? x.sl20 : 0.2 * x.em).toFixed(2);
+          $('rv3').innerHTML = `<div class="rv3-hd"><span>${x.sym} · ${vName}</span><span class="r-tag">Bornes figées · 15:30 FR</span></div>` +
+            `<table>` +
+            `<tr><td class="r-lbl">Échantillon utilisé</td><td class="r-val">60 / 60 séances</td></tr>` +
+            `<tr><td class="r-lbl">Open / volatilité figée</td><td class="r-val">${x.ous.toFixed(2)} / ${(x.vix ?? 0).toFixed(2)}%</td></tr>` +
+            `<tr><td class="r-lbl">EM théorique non calibré (A)</td><td class="r-val">± ${x.em.toFixed(2)} pts</td></tr>` +
+            `<tr><td class="r-lbl">Ratios moyens haut / bas</td><td class="r-val">${(x.mup ?? 1).toFixed(2)} / ${(x.mdn ?? 1).toFixed(2)}</td></tr>` +
+            `<tr><td class="r-lbl">Écarts-types ratios haut / bas</td><td class="r-val">${(x.sup ?? 0).toFixed(2)} / ${(x.sdn ?? 0).toFixed(2)}</td></tr>` +
+            `<tr><td class="r-lbl">Distances moyennes B + / -</td><td class="r-val"><span style="color:#26c6da">+${dBup}</span> / <span style="color:#ef5350">-${dBdn}</span></td></tr>` +
+            `<tr><td class="r-lbl">Distances enveloppe C + / -</td><td class="r-val"><span style="color:#26c6da">+${dCup}</span> / <span style="color:#ef5350">-${dCdn}</span></td></tr>` +
+            `<tr><td class="r-lbl">SL indicatif 20% EM</td><td class="r-val" style="color:#ffa726">${sl20} pts</td></tr>` +
+            `</table>`;
+          $('rv3').style.display = 'block';
+        }
         if ($('cF').checked && x.fl != null && x.ft1 != null) { bx.push({ t1: snap(x.ft1), t2: snap(x.tx), p1: x.fl, p2: x.fh, c: 'rgba(224,168,0,0.28)' }); line(x.ft1, x.tx, x.fl, '#e0a800', 1, 2); line(x.ft1, x.tx, x.fh, '#e0a800', 1, 2, 'FVG 5m') }
         const dn = short ? 'belowBar' : 'aboveBar';
         mk.push({ time: snap(x.ts), position: dn, color: '#e0a800', shape: short ? 'arrowDown' : 'arrowUp', text: 'OPR ' + (x.sess || '') });
@@ -300,7 +383,8 @@
       mk.push({ time: snap(x.te), position: up2, color: '#2962ff', shape: short ? 'arrowDown' : 'arrowUp', text: short ? 'SHORT' : 'LONG' }, { time: snap(x.tx), position: dn2, color: win ? '#26a69a' : '#ef5350', shape: 'circle', text: x.reason + ' ' + x.r.toFixed(2) + 'R' });
       mk.sort((a, b) => a.time - b.time); cs.setMarkers(mk);
       const pad = Math.max(3 * 3600, 40 * tf); chart.timeScale().setVisibleRange({ from: snap(Math.max(left, x.ts - CTX * 86400)) - pad, to: snap(x.tx) + pad });
-      $('info').textContent = `${x.sym} #${+$('sel').value + 1} ${x.strat} ${x.side.toUpperCase()} (${x.tf}) | entrée ${x.entry.toPrecision(7)} | SL ${x.sl.toPrecision(7)} | TP ${x.tp.toPrecision(7)} | sortie ${x.exit.toPrecision(7)} (${x.reason}) | ${x.r.toFixed(2)}R${x.tr_ratio != null ? ' | ratio temps ' + x.tr_ratio.toFixed(2) : ''}\nSignal ${D(x.ts)} · fill ${D(x.te)} · sortie ${D(x.tx)} UTC`
+      const rvInfo = x.vix != null ? ` | VIX ${x.vix.toFixed(2)}% | EM ±${(x.em || 0).toFixed(1)}pts | SL ${Math.abs(x.entry - x.sl).toFixed(1)}pts` : '';
+      $('info').textContent = `${x.sym} #${+$('sel').value + 1} ${x.strat}${x.sess ? ' (' + x.sess + ')' : ''} ${x.side.toUpperCase()} (${x.tf}) | entrée ${x.entry.toPrecision(7)} | SL ${x.sl.toPrecision(7)} | TP ${x.tp.toPrecision(7)} | sortie ${x.exit.toPrecision(7)} (${x.reason}) | ${x.r.toFixed(2)}R${rvInfo}${x.tr_ratio != null ? ' | ratio temps ' + x.tr_ratio.toFixed(2) : ''}\nSignal ${D(x.ts)} · fill ${D(x.te)} · sortie ${D(x.tx)} UTC`
     }
   </script>
 </body>

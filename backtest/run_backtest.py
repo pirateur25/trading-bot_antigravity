@@ -190,6 +190,7 @@ def main():
     ap.add_argument("--ftmo_mode", default="1phase", choices=["1phase", "2phases"])
     ap.add_argument("--use_best_ote", default="oui")
     ap.add_argument("--use_best_fvg", default="oui")
+    ap.add_argument("--use_best_opr", default="oui")
     ap.add_argument("--params_ote", default="")
     ap.add_argument("--params_fvg", default="")
     ap.add_argument("--params_opr", default="")
@@ -206,7 +207,7 @@ def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     p_ote = load_params(strategy_ote, os.path.join(here, "results", "best_params_ote.json") if a.use_best_ote == "oui" else "", a.params_ote)
     p_fvg = load_params(strategy_fvg, os.path.join(here, "results", "best_params_fvg.json") if a.use_best_fvg == "oui" else "", a.params_fvg)
-    p_opr = load_params(strategy_opr, "", a.params_opr)
+    p_opr = load_params(strategy_opr, os.path.join(here, "results", "best_params_opr.json") if a.use_best_opr == "oui" else "", a.params_opr)
 
     # Si on lance uniquement OPR et que seuls des forex étaient passés par erreur, s'assurer que les indices US sont inclus
     if a.mode == "opr_only" and not any(s in INDICES_OPR for s in forex):
