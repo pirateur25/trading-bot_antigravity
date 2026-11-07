@@ -18,8 +18,14 @@ Backtests lancés sur GitHub Actions (workflow `.github/workflows/backtest.yml`)
     - **Seuil de bruit (20% EM)** : `Seuil_Bruit = em_noise_pct * EM_brut` (`0.20 * EM_brut` par défaut).
   - **Sélection dynamique du SL (`SL_distance`)** :
     - `VIX > 20` (Stress) : `SL_distance = max(SL_M5, sl_atr_mult * ATR_H1_14)` (ou `add_atr` selon levier Optuna).
-    - `15 <= VIX <= 20` (Standard) : `SL_distance = max(SL_M5, Seuil_Bruit, Plancher_Indice)` avec plancher = **80 pts** (`US30`), **70 pts** (`NAS100`/`US100`), **50 pts** (`USA500`/`US500`).
-    - `VIX < 15` (Euphorie) : `SL_distance = max(SL_M5, Seuil_Bruit)`.
+    - `15 <= VIX <= 20` (Standard) : `SL_distance = max(SL_M5, Seuil_Bruit, Plancher_Indice)` avec plancher proportionnel au prix (`MIN_SL_PCT` : `0.18%` US30/USA500, `0.22%` NAS100, soit ~80/70/12.5 pts aux cours actuels mais adapté aux cours 2015–2021).
+    - `VIX < 15` (Euphorie) : `sl_vix15_mode` (`"m5_only"` = SL sous la bougie M5 de cassure, `"half_noise"` = 10% EM, `"full_noise"` = 20% EM).
+  - **Filtres Anti-Range & Qualité de Cassure** :
+    - `min_vix` : ignore les séances de range mort où `VIX/VXN/VXD < min_vix` (ex: 2017).
+    - `min_opr_em` / `max_opr_em` : ignore les OPR trop étroits (`< 20% EM`) ou déjà épuisés (`> 55% EM`).
+    - `min_mm_spread_atr` : exige un écart minimal `|MM20 - MM50| / ATR_H1` en H1 pour éviter les ranges plats.
+    - `true_breakout_only` : exige que la bougie M5 de Cassure franchisse effectivement la borne OPR (`close[k-1] <= OPR High < close[k]`).
+    - `max_fill_bars` & `end_hour` : délai max de déclenchement de l'ordre limite et heure limite de nouveau signal (`17h30`, `18h30`, `19h30` FR).
   - **Filtre d'espace disponible avant BE (`res_be_mode`) & TP (`rv3_tp_mode`)** : annulation si obstacle (`B`, `C`, `PDH/PDL`, `PSH/PSL`, `FVG H1`) avant `+be_rr * SL_distance` ; gestion du TP par rapport aux bornes RV3 (`B`/`C`) et résistances.
   - **Visualiseur RV3** (`viewer/template.html` & `viewer/viewer.html`) : affiche l'Open US (jaune), les lignes A (gris), B (cyan/rouge), C (teal/rouge foncé), les zones ombrées `B -> C` et le tableau complet de calibration RV3 en bas à droite.
 - Simulation FTMO (`backtest/sim_challenge.py`) avec superposition des trades : OPR seule / OTE+FVG+OPR / OTE+FVG.

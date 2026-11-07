@@ -44,9 +44,12 @@ SPACE = {
     "trend_tf": ("cat", ["1h"]),
     "trend_mode": ("cat", ["mm20_50"]),
     "cancel_rr": ("cat", [1.0]),
+    "sl_floor_mode": ("cat", ["pct", "fixed_pts"]),
+    "true_breakout_only": ("cat", [1, 0]),
     # --- Leviers optimisés : SL, BE, TP et Obstacles RV3 ---
     "be_rr": ("cat", [0.75, 1.0, 1.25, 1.5]),
     "em_noise_pct": ("cat", [0.15, 0.20, 0.25]),
+    "sl_vix15_mode": ("cat", ["m5_only", "half_noise", "full_noise"]),
     "sl_atr_mult": ("cat", [0.5, 0.75, 1.0, 1.25, 1.5]),
     "sl_vix20_mode": ("cat", ["max_atr", "add_atr"]),
     "rr_break": ("cat", [1.5, 2.0, 2.5, 3.0, 3.5]),
@@ -54,6 +57,13 @@ SPACE = {
     "res_be_mode": ("cat", ["none", "rv3_b", "rv3_c", "sr_fvg", "all"]),
     "rv3_tp_mode": ("cat", ["none", "reject_c", "reject_b", "cap_c", "cap_b", "ext_res"]),
     "fvg_h1_lookback_days": ("cat", [10, 20, 30]),
+    # --- Leviers Anti-Range & Fenêtre d'exécution ---
+    "min_vix": ("cat", [0.0, 13.0, 14.0, 15.0, 16.0]),
+    "min_opr_em": ("cat", [0.0, 0.15, 0.20, 0.25]),
+    "max_opr_em": ("cat", [0.45, 0.55, 0.70, 99.0]),
+    "min_mm_spread_atr": ("cat", [0.0, 0.15, 0.30, 0.45]),
+    "end_hour": ("cat", [17, 18, 19]),
+    "max_fill_bars": ("cat", [3, 6, 12, 99]),
 }
 
 FROZEN_DEFAULT = {
@@ -62,6 +72,8 @@ FROZEN_DEFAULT = {
     "trend_tf": "1h",
     "trend_mode": "mm20_50",
     "cancel_rr": 1.0,
+    "sl_floor_mode": "pct",
+    "true_breakout_only": 1,
 }
 
 REFERENCE = {
@@ -70,19 +82,27 @@ REFERENCE = {
     "trend_tf": "1h",
     "trend_mode": "mm20_50",
     "tz_mode": "paris",
-    "end_hour": 19,
+    "end_hour": 18,
     "end_min": 30,
     "cancel_rr": 1.0,
-    "be_rr": 1.0,
+    "be_rr": 1.25,
     "em_noise_pct": 0.20,
+    "sl_vix15_mode": "m5_only",
+    "sl_floor_mode": "pct",
     "sl_atr_mult": 1.0,
     "sl_vix20_mode": "max_atr",
     "rr_break": 2.5,
     "min_rr_reint": 2.0,
-    "res_be_mode": "all",
+    "res_be_mode": "rv3_b",
     "rv3_tp_mode": "cap_c",
     "max_rr_tp": 5.0,
-    "fvg_h1_lookback_days": 20,
+    "fvg_h1_lookback_days": 15,
+    "min_vix": 14.0,
+    "min_opr_em": 0.20,
+    "max_opr_em": 0.55,
+    "min_mm_spread_atr": 0.15,
+    "true_breakout_only": 1,
+    "max_fill_bars": 6,
 }
 
 
@@ -109,14 +129,23 @@ def suggest_params(trial, frozen, base):
         "trend_tf",
         "trend_mode",
         "cancel_rr",
+        "sl_floor_mode",
+        "true_breakout_only",
         "be_rr",
         "em_noise_pct",
+        "sl_vix15_mode",
         "sl_atr_mult",
         "sl_vix20_mode",
         "rr_break",
         "min_rr_reint",
         "res_be_mode",
         "rv3_tp_mode",
+        "min_vix",
+        "min_opr_em",
+        "max_opr_em",
+        "min_mm_spread_atr",
+        "end_hour",
+        "max_fill_bars",
     )
     if p["res_be_mode"] in ("sr_fvg", "all") or p["rv3_tp_mode"] == "ext_res":
         pick("fvg_h1_lookback_days")
@@ -198,7 +227,7 @@ def main():
     ap.add_argument("--symbols", default=",".join(SYMBOLS_DEFAULT))
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--split", default="2024-01-01")
-    ap.add_argument("--n_trials", type=int, default=300)
+    ap.add_argument("--n_trials", type=int, default=800)
     ap.add_argument("--fee", type=float, default=-1.0, help="% par ordre ; -1 = frais FTMO réels par actif")
     ap.add_argument("--risk", type=float, default=0.5)
     ap.add_argument("--leverage", type=float, default=0.0, help="0 = levier FTMO par actif")
@@ -220,6 +249,13 @@ def main():
     base.update(REFERENCE)
     base.update(frozen)
     oc.run_study("opr", ev, lambda tr: suggest_params(tr, frozen, base), base, SPACE, frozen, a, "best_params_opr.json", "summary_opr.txt")
+    # Copie automatique vers results/best_params_opr.json pour que run_backtest.py l'utilise directement
+    src_json = os.path.join(a.outdir, "best_params_opr.json")
+    dst_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+    if os.path.exists(src_json):
+        import shutil
+        os.makedirs(dst_dir, exist_ok=True)
+        shutil.copyfile(src_json, os.path.join(dst_dir, "best_params_opr.json"))
 
 
 if __name__ == "__main__":

@@ -199,7 +199,7 @@ def run_study(label, ev, suggest_fn, baseline, space, frozen, a, best_file, summ
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     storage = f"sqlite:///{os.path.join(a.outdir, 'study_' + label + '.db')}"
     study = optuna.create_study(study_name=f"{label}_v4", storage=storage, direction="maximize", load_if_exists=True,
-                                sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=min(35, max(10, a.n_trials // 4))))
+                                sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=min(150, max(35, a.n_trials // 6))))
     if len(study.trials) == 0:
         try:
             study.enqueue_trial({k: v for k, v in baseline.items() if k in space and k not in frozen})

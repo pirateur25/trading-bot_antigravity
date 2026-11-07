@@ -7,8 +7,8 @@ on:
         description: "Indices US (NAS100,USA500,US30)"
         default: "NAS100,USA500,US30"
       n_trials:
-        description: "Nombre d'essais Optuna"
-        default: "300"
+        description: "Nombre d'essais Optuna (800 recommandé pour 16 leviers sans surapprentissage, ~40 min)"
+        default: "800"
       split:
         description: "Début de la période TEST hors-échantillon (TRAIN = 2015 -> split, découpé en 3 plis WFA)"
         default: "2024-01-01"
@@ -35,6 +35,8 @@ jobs:
   optimize:
     runs-on: ubuntu-latest
     timeout-minutes: 345
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,7 +44,7 @@ jobs:
           python-version: '3.11'
       - run: pip install -r requirements.txt
       - name: Création du dossier résultats
-        run: mkdir -p results_opt
+        run: mkdir -p results_opt results
       - name: Optimisation OPR + RV3 (choix sur TRAIN, jugement sur TEST) + envoi Telegram
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -54,6 +56,16 @@ jobs:
             --fee "${{ inputs.fee }}" --risk "${{ inputs.risk }}" --min_trades "${{ inputs.min_trades }}" --wall_time "${{ inputs.wall_time }}" \
             --freeze "${{ inputs.freeze }}" --unfreeze "${{ inputs.unfreeze }}" \
             --outdir results_opt 2>&1 | tee results_opt/log.txt
+      - name: Sauvegarde automatique de results/best_params_opr.json dans le dépôt GitHub
+        if: success()
+        run: |
+          if [ -f results_opt/best_params_opr.json ]; then
+            cp results_opt/best_params_opr.json results/best_params_opr.json
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add results/best_params_opr.json
+            git diff --staged --quiet || (git commit -m "chore: update best_params_opr.json from Optuna WFA" && git push)
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

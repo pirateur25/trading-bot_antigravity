@@ -49,13 +49,25 @@ import pandas as pd
 
 SETUP_ORDER = ["Cassure", "Reintegration"]
 
-# Plancher minimal de SL en points lorsque 15 <= indice de volatilité <= 20
+# Plancher minimal de SL en points (cours 2026) et son équivalent proportionnel au cours (pour 2015-2026)
 MIN_SL_POINTS = {
     "US30": 80.0,
     "NAS100": 70.0,
     "US100": 70.0,
     "USA500": 50.0,
     "US500": 50.0,
+}
+
+# Équivalent proportionnel au prix de l'indice :
+# - US30   : ~80 pts à 44 000 (0.18%), soit ~32 pts en 2015 (à 18 000)
+# - NAS100 : ~70 pts à 31 000 (0.22%), soit ~9.5 pts en 2015 (à 4 300)
+# - USA500 : ~12.5 pts (50 ticks ES) à 7 000 (0.18%), soit ~3.8 pts en 2015 (à 2 100)
+MIN_SL_PCT = {
+    "US30": 0.0018,
+    "NAS100": 0.0022,
+    "US100": 0.0022,
+    "USA500": 0.0018,
+    "US500": 0.0018,
 }
 
 # Fichier d'indice de volatilité associé à chaque indice US dans data/
@@ -72,7 +84,7 @@ PARAMS = {
     "trend_tf": "1h",
     "trend_mode": "mm20_50",
     "tz_mode": "paris",
-    "end_hour": 19,
+    "end_hour": 18,             # Fin de prise de nouveau signal (18h30 FR par défaut, max 19h30 FR)
     "end_min": 30,
     "side": "both",
     "setups": "Cassure,Reintegration",
@@ -80,17 +92,26 @@ PARAMS = {
     "rv3_lookback": 60,
     "vix_low": 15.0,
     "vix_high": 20.0,
-    # --- Leviers optimisables (SL / BE / TP / Obstacles & RV3) ---
-    "be_rr": 1.0,               # Break-Even à X R (1.0 par défaut)
+    # --- Leviers optimisables (SL / BE / TP / Obstacles / RV3 / Filtres Anti-Range) ---
+    "be_rr": 1.25,              # Break-Even à X R
     "em_noise_pct": 0.20,       # Seuil de bruit en fraction de l'EM brut (0.20 = 20% EM)
+    "sl_vix15_mode": "m5_only", # Régime VIX < 15 : "m5_only" (SL sous bougie M5) | "half_noise" (10% EM) | "full_noise" (20% EM)
+    "sl_floor_mode": "pct",     # Plancher 15 <= VIX <= 20 : "pct" (proportionnel au prix 2015-2026) | "fixed_pts" (50/70/80 pts fixes)
     "sl_atr_mult": 1.0,         # Multiplicateur ATR(14) H1 quand VIX > 20
     "sl_vix20_mode": "max_atr", # "max_atr" = max(SL_M5, mult*ATR_H1) | "add_atr" = SL_M5 + mult*ATR_H1
     "rr_break": 2.5,            # TP cible (en R) sur le setup Cassure
     "min_rr_reint": 2.0,        # RR minimum exigé sur le setup Réintégration (TP = borne opposée OPR)
-    "res_be_mode": "all",       # Obstacles vérifiés avant BE : "none" | "rv3_b" | "rv3_c" | "sr_fvg" | "all"
-    "rv3_tp_mode": "none",      # Gestion du TP vs RV3 (B / C) : "none" | "reject_c" | "reject_b" | "cap_c" | "cap_b" | "ext_res"
+    "res_be_mode": "rv3_b",     # Obstacles vérifiés avant BE : "none" | "rv3_b" | "rv3_c" | "sr_fvg" | "all"
+    "rv3_tp_mode": "cap_c",     # Gestion du TP vs RV3 (B / C) : "none" | "reject_c" | "reject_b" | "cap_c" | "cap_b" | "ext_res"
     "max_rr_tp": 5.0,           # Plafond RR quand rv3_tp_mode == "ext_res"
-    "fvg_h1_lookback_days": 20, # Jours de lookback pour les FVG H1 non mitigées
+    "fvg_h1_lookback_days": 15, # Jours de lookback pour les FVG H1 non mitigées
+    # --- Filtres Anti-Range & Qualité de Cassure ---
+    "min_vix": 14.0,            # Filtre anti-range : ignore les séances où VIX/VXN/VXD < min_vix (ex: 2017 VIX=10)
+    "min_opr_em": 0.20,         # Ignore les OPR trop compressés (< 20% de l'EM brut = range étroit à l'open)
+    "max_opr_em": 0.55,         # Ignore les OPR géants (> 55% de l'EM brut déjà consommé en 15 min)
+    "min_mm_spread_atr": 0.15,  # Écart minimal |MM20 - MM50| en H1 en fraction de l'ATR H1 (0 = pas de filtre de range H1)
+    "true_breakout_only": 1,    # 1 = la bougie M5 de Cassure doit franchir la borne OPR (pas la 4e bougie déjà dehors)
+    "max_fill_bars": 6,         # Délai max (en bougies M5) pour déclencher l'ordre limite après le signal (6 = 30 min)
 }
 
 
@@ -238,12 +259,13 @@ def _h1_atr_and_fvgs(pd_):
 
 
 def _trend_h1_mm20_50(pd_, tf="1h", mode="mm20_50"):
-    key = ("opr_trend", tf, mode)
+    key = ("opr_trend_v2", tf, mode)
     if key in pd_.cache:
         return pd_.cache[key]
 
     f = pd_.frames[tf]
     hc = f["c"]
+    atr_h = f["atr"]
     nh = len(hc)
     b_close = pd_.base["c"]
     b_close_ns = pd_.base["close_ns"]
@@ -256,14 +278,18 @@ def _trend_h1_mm20_50(pd_, tf="1h", mode="mm20_50"):
         ema20 = s_c.ewm(span=20, adjust=False).mean().to_numpy()
         ema50 = s_c.ewm(span=50, adjust=False).mean().to_numpy()
         st_h = np.zeros(nh, dtype=np.int8)
-        with np.errstate(invalid="ignore"):
+        sp_h = np.zeros(nh, dtype=np.float32)
+        with np.errstate(invalid="ignore", divide="ignore"):
             bull = (np.arange(nh) >= 20) & (ema20 > ema50) & (hc > ema50)
             bear = (np.arange(nh) >= 20) & (ema20 < ema50) & (hc < ema50)
+            sp_h = np.where(atr_h > 0, np.abs(ema20 - ema50) / atr_h, 0.0).astype(np.float32)
         st_h[bull] = 1
         st_h[bear] = -1
-        mapped = np.where(j >= 0, st_h[np.clip(j, 0, max(0, nh - 1))], 0).astype(np.int8)
-        pd_.cache[key] = mapped
-        return mapped
+        j_clip = np.clip(j, 0, max(0, nh - 1))
+        mapped = np.where(j >= 0, st_h[j_clip], 0).astype(np.int8)
+        spread = np.where(j >= 0, sp_h[j_clip], 0.0).astype(np.float32)
+        pd_.cache[key] = (mapped, spread)
+        return pd_.cache[key]
 
     csum = np.concatenate([[0.0], np.cumsum(hc, dtype=np.float64)])
     exact_close = np.zeros(nb, dtype=bool)
@@ -271,6 +297,7 @@ def _trend_h1_mm20_50(pd_, tf="1h", mode="mm20_50"):
     exact_close[valid_j] = f["close_ns"][j[valid_j]] == b_close_ns[valid_j]
 
     mapped = np.zeros(nb, dtype=np.int8)
+    spread = np.zeros(nb, dtype=np.float32)
     ok = (j >= 49) & (~np.isnan(b_close))
     idx = np.flatnonzero(ok)
     if len(idx) > 0:
@@ -292,8 +319,13 @@ def _trend_h1_mm20_50(pd_, tf="1h", mode="mm20_50"):
         st_sub[bear] = -1
         mapped[idx] = st_sub
 
-    pd_.cache[key] = mapped
-    return mapped
+        atr_sub = atr_h[ji]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sp_sub = np.where(atr_sub > 0, np.abs(mm20 - mm50) / atr_sub, 0.0)
+        spread[idx] = sp_sub.astype(np.float32)
+
+    pd_.cache[key] = (mapped, spread)
+    return pd_.cache[key]
 
 
 def _precompute_daily_sessions(pd_, tz_mode="paris"):
@@ -431,7 +463,7 @@ def _precompute_daily_sessions(pd_, tz_mode="paris"):
     return days_list
 
 
-def _compute_sl_rv3(side, entry, candle_low, candle_high, vix_val, atr_h1_val, em_brut, min_sl_pts, p):
+def _compute_sl_rv3(side, entry, candle_low, candle_high, vix_val, atr_h1_val, em_brut, min_sl_pts, min_sl_pct, p):
     """
     Calcul dynamique de la distance du Stop Loss selon les spécifications RV3 :
       1. Seuil de bruit EM = `em_noise_pct * EM_brut` (20% EM par défaut)
@@ -441,19 +473,27 @@ def _compute_sl_rv3(side, entry, candle_low, candle_high, vix_val, atr_h1_val, e
              * mode "max_atr" : `sl_dist = max(sl_m5, sl_atr_mult * atr_h1)`
              * mode "add_atr" : `sl_dist = sl_m5 + sl_atr_mult * atr_h1`
          - Si vix_low (15) <= VIX <= vix_high (20) :
-             `sl_dist = max(sl_m5, noise_thr, min_sl_pts)`
+             * `sl_floor_mode == "pct"` : plancher proportionnel au prix (`entry * min_sl_pct`, adapté 2015-2026)
+             * `sl_floor_mode == "fixed_pts"` : plancher fixe 2026 (`min_sl_pts`)
+             * `sl_dist = max(sl_m5, noise_thr, floor_val)`
          - Si VIX < vix_low (15) :
-             `sl_dist = max(sl_m5, noise_thr)`
+             * `sl_vix15_mode == "m5_only"`    : SL sous la bougie M5 de cassure (`max(sl_m5, 0.03 * em_brut)`)
+             * `sl_vix15_mode == "half_noise"` : `max(sl_m5, 0.5 * noise_thr)` (10% EM)
+             * `sl_vix15_mode == "full_noise"` : `max(sl_m5, noise_thr)` (20% EM)
     """
     vix_low = float(p.get("vix_low", 15.0))
     vix_high = float(p.get("vix_high", 20.0))
     em_noise_pct = float(p.get("em_noise_pct", 0.20))
     sl_atr_mult = float(p.get("sl_atr_mult", 1.0))
-    sl_vix20_mode = str(p.get("sl_vix20_mode", "max_atr"))
+    sl_vix20_mode = str(p.get("sl_vix20_mode", "max_atr")).lower()
+    sl_vix15_mode = str(p.get("sl_vix15_mode", "m5_only")).lower()
+    sl_floor_mode = str(p.get("sl_floor_mode", "pct")).lower()
 
     atr_ok = (atr_h1_val == atr_h1_val) and (atr_h1_val > 0)
     vix_ok = (vix_val == vix_val) and (vix_val > 0)
-    noise_thr = (em_noise_pct * em_brut) if (em_brut == em_brut and em_brut > 0) else 0.0
+    em_ok = (em_brut == em_brut) and (em_brut > 0)
+    noise_thr = (em_noise_pct * em_brut) if em_ok else 0.0
+    tiny_floor = (0.03 * em_brut) if em_ok else (entry * 0.0003)
 
     if side == "long":
         sl_m5 = entry - candle_low
@@ -462,15 +502,22 @@ def _compute_sl_rv3(side, entry, candle_low, candle_high, vix_val, atr_h1_val, e
     if sl_m5 <= 0:
         return np.nan
 
+    floor_val = float(min_sl_pts) if sl_floor_mode == "fixed_pts" else float(entry * min_sl_pct)
+
     if vix_ok and vix_val > vix_high and atr_ok:
         if sl_vix20_mode == "add_atr":
             sl_dist = sl_m5 + sl_atr_mult * atr_h1_val
         else:
             sl_dist = max(sl_m5, sl_atr_mult * atr_h1_val)
     elif vix_ok and vix_val >= vix_low:
-        sl_dist = max(sl_m5, noise_thr, float(min_sl_pts))
+        sl_dist = max(sl_m5, noise_thr, floor_val)
     else:
-        sl_dist = max(sl_m5, noise_thr)
+        if sl_vix15_mode == "full_noise":
+            sl_dist = max(sl_m5, noise_thr)
+        elif sl_vix15_mode == "half_noise":
+            sl_dist = max(sl_m5, 0.5 * noise_thr)
+        else:
+            sl_dist = max(sl_m5, tiny_floor)
 
     return float(entry - sl_dist) if side == "long" else float(entry + sl_dist)
 
@@ -615,6 +662,14 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
 
     sym_up = str(getattr(pd_, "symbol", "NAS100")).upper()
     min_sl_pts = MIN_SL_POINTS.get(sym_up, 50.0)
+    min_sl_pct = MIN_SL_PCT.get(sym_up, 0.0018)
+
+    min_vix = float(p.get("min_vix", 0.0))
+    min_opr_em = float(p.get("min_opr_em", 0.0))
+    max_opr_em = float(p.get("max_opr_em", 99.0))
+    min_mm_spread_atr = float(p.get("min_mm_spread_atr", 0.0))
+    true_breakout_only = int(float(p.get("true_breakout_only", 1))) != 0
+    max_fill_bars = int(float(p.get("max_fill_bars", 99)))
 
     B = pd_.base
     o, h, l, c = B["o"], B["h"], B["l"], B["c"]
@@ -624,16 +679,20 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
     fee = fee_pct / 100.0
 
     _, mins_vec = _tz_vectors(pd_, tz_mode)
-    trend_vec = _trend_h1_mm20_50(pd_, str(p.get("trend_tf", "1h")), str(p.get("trend_mode", "mm20_50")))
+    trend_vec, mm_spread_vec = _trend_h1_mm20_50(pd_, str(p.get("trend_tf", "1h")), str(p.get("trend_mode", "mm20_50")))
     j_h1, atr_h1_arr, bear_fvgs, bull_fvgs = _h1_atr_and_fvgs(pd_)
     daily_sessions = _precompute_daily_sessions(pd_, tz_mode)
 
+    end_h = int(float(p.get("end_hour", 19)))
+    end_m = int(float(p.get("end_min", 30)))
     if tz_mode == "ny":
-        opr_end_min = 9 * 60 + 45      # 09h45 NY
-        end_session_min = 13 * 60 + 30 # 13h30 NY
+        opr_end_min = 9 * 60 + 45
+        end_session_min = (end_h - 6) * 60 + end_m
     else:
-        opr_end_min = 15 * 60 + 45     # 15h45 Paris
-        end_session_min = int(p.get("end_hour", 19)) * 60 + int(p.get("end_min", 30))  # 19h30 Paris
+        opr_end_min = 15 * 60 + 45
+        end_session_min = end_h * 60 + end_m
+    # L'annulation de fin de séance (19h30 FR) reste active même si on arrête de chercher de nouveaux signaux plus tôt
+    hard_end_min = (13 * 60 + 30) if tz_mode == "ny" else (19 * 60 + 30)
 
     start_search = max(0, i0)
     end_search = min(n, i1)
@@ -655,6 +714,17 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
         open_us = ds["open_us"]
         vix_val = ds["vix"]
         em_brut = ds["em_brut"]
+
+        # --- Filtre Anti-Range 1 : Volatilité minimale (évite les marchés morts type 2017 VIX < 14) ---
+        if min_vix > 0.0 and vix_val == vix_val and vix_val < min_vix:
+            continue
+
+        # --- Filtre Anti-Range 2 : Taille de l'OPR relative à l'Expected Move ---
+        if em_brut == em_brut and em_brut > 0.0:
+            opr_em_ratio = (opr_hi - opr_lo) / em_brut
+            if opr_em_ratio < min_opr_em or opr_em_ratio > max_opr_em:
+                continue
+
         mean_up, std_up = ds["mean_up"], ds["std_up"]
         mean_dn, std_dn = ds["mean_dn"], ds["std_dn"]
         pdh, pdl = ds["pdh"], ds["pdl"]
@@ -674,11 +744,15 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
 
         m_after = mins_vec[opr_i1 + 1:min(d_end, end_search)]
         exec_rel = np.flatnonzero((m_after >= opr_end_min) & (m_after < end_session_min))
-        if len(exec_rel) < 2:
+        if len(exec_rel) < 1:
+            continue
+
+        hard_rel = np.flatnonzero((m_after >= opr_end_min) & (m_after < max(end_session_min, hard_end_min)))
+        if len(hard_rel) < 2:
             continue
 
         exec_indices = (opr_i1 + 1) + exec_rel
-        f_idx = int(exec_indices[-1]) + 1
+        f_idx = int((opr_i1 + 1) + hard_rel[-1]) + 1
 
         pdh_mit = (pdh == pdh) and (ds["high_before_exec"] >= pdh)
         pdl_mit = (pdl == pdl) and (ds["low_before_exec"] <= pdl)
@@ -688,12 +762,33 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
         exited_below = False
         exited_above = False
 
-        for k in exec_indices[:-1]:
+        for k in exec_indices:
             k = int(k)
+            if k + 1 >= f_idx:
+                break
             t_dir = int(trend_vec[k])
             ck = float(c[k])
+            ok_p = float(o[k])
+            prev_c = float(c[k - 1]) if k > 0 else ok_p
             hk = float(h[k])
             lk = float(l[k])
+
+            # --- Filtre Anti-Range 3 : Écart minimal entre MM20 et MM50 H1 (évite les ranges H1 plats) ---
+            if min_mm_spread_atr > 0.0 and float(mm_spread_vec[k]) < min_mm_spread_atr:
+                if lk < opr_lo:
+                    exited_below = True
+                if hk > opr_hi:
+                    exited_above = True
+                if pdh == pdh and hk >= pdh:
+                    pdh_mit = True
+                if pdl == pdl and lk <= pdl:
+                    pdl_mit = True
+                if psh == psh and hk >= psh:
+                    psh_mit = True
+                if psl == psl and lk <= psl:
+                    psl_mit = True
+                continue
+
             sig_close_ns = int(close_ns[k])
             jh = int(j_h1[k])
             atr_h1_val = float(atr_h1_arr[jh]) if jh >= 0 else np.nan
@@ -702,7 +797,8 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             if t_dir == 1 and side_filter in ("both", "long"):
                 cand_setup = None
                 cand_entry = np.nan
-                if "Cassure" in allowed_setups and ck > opr_hi:
+                is_break_up = (ck > opr_hi) and ((not true_breakout_only) or (prev_c <= opr_hi) or (ok_p <= opr_hi))
+                if "Cassure" in allowed_setups and is_break_up:
                     cand_setup = "Cassure"
                     cand_entry = opr_hi
                 elif "Reintegration" in allowed_setups and exited_below and (opr_lo <= ck <= opr_hi):
@@ -710,7 +806,7 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     cand_entry = opr_lo
 
                 if cand_setup is not None:
-                    sl = _compute_sl_rv3("long", cand_entry, lk, hk, vix_val, atr_h1_val, em_brut, min_sl_pts, p)
+                    sl = _compute_sl_rv3("long", cand_entry, lk, hk, vix_val, atr_h1_val, em_brut, min_sl_pts, min_sl_pct, p)
                     if sl == sl and sl < cand_entry:
                         risk = cand_entry - sl
                         be_dist = (be_rr if be_rr > 0 else 1.0) * risk
@@ -759,7 +855,8 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             elif t_dir == -1 and side_filter in ("both", "short"):
                 cand_setup = None
                 cand_entry = np.nan
-                if "Cassure" in allowed_setups and ck < opr_lo:
+                is_break_dn = (ck < opr_lo) and ((not true_breakout_only) or (prev_c >= opr_lo) or (ok_p >= opr_lo))
+                if "Cassure" in allowed_setups and is_break_dn:
                     cand_setup = "Cassure"
                     cand_entry = opr_lo
                 elif "Reintegration" in allowed_setups and exited_above and (opr_lo <= ck <= opr_hi):
@@ -767,7 +864,7 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     cand_entry = opr_hi
 
                 if cand_setup is not None:
-                    sl = _compute_sl_rv3("short", cand_entry, lk, hk, vix_val, atr_h1_val, em_brut, min_sl_pts, p)
+                    sl = _compute_sl_rv3("short", cand_entry, lk, hk, vix_val, atr_h1_val, em_brut, min_sl_pts, min_sl_pct, p)
                     if sl == sl and sl > cand_entry:
                         risk = sl - cand_entry
                         be_dist = (be_rr if be_rr > 0 else 1.0) * risk
@@ -824,7 +921,7 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             if psl == psl and lk <= psl:
                 psl_mit = True
 
-    # 2) Simulation de chaque ordre limite (annulé si 1R atteint avant exécution ou si 19h30 atteint)
+    # 2) Simulation de chaque ordre limite (annulé si 1R atteint avant exécution, ou délai max dépassé, ou 19h30 atteint)
     raw_trades = []
     for s in signals:
         sig_i = s["sig_i"]
@@ -841,9 +938,10 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             continue
 
         cancel_lvl = (en + cancel_rr * risk_dist) if sign == -1 else (en - cancel_rr * risk_dist)
+        fill_limit_end = min(f_idx, i1, sig_i + 1 + max_fill_bars) if max_fill_bars > 0 else min(f_idx, i1)
 
         fill = -1
-        for k in range(sig_i + 1, min(f_idx, i1)):
+        for k in range(sig_i + 1, fill_limit_end):
             if sign == -1:  # Long : BUY LIMIT à en
                 if l[k] <= en:
                     fill = k
