@@ -58,16 +58,14 @@ MIN_SL_POINTS = {
     "US500": 50.0,
 }
 
-# Équivalent proportionnel au prix de l'indice :
-# - US30   : ~80 pts à 44 000 (0.18%), soit ~32 pts en 2015 (à 18 000)
-# - NAS100 : ~70 pts à 31 000 (0.22%), soit ~9.5 pts en 2015 (à 4 300)
-# - USA500 : ~12.5 pts (50 ticks ES) à 7 000 (0.18%), soit ~3.8 pts en 2015 (à 2 100)
+# Équivalent proportionnel au prix de l'indice (calibré sur le SL indicatif RV3 de Romain Bailleul :
+# 9 pts sur ES à 7778 = 0.116% ~ 0.12% sur USA500/US30, 0.15% sur NAS100) :
 MIN_SL_PCT = {
-    "US30": 0.0018,
-    "NAS100": 0.0022,
-    "US100": 0.0022,
-    "USA500": 0.0018,
-    "US500": 0.0018,
+    "US30": 0.0012,
+    "NAS100": 0.0015,
+    "US100": 0.0015,
+    "USA500": 0.0012,
+    "US500": 0.0012,
 }
 
 # Fichier d'indice de volatilité associé à chaque indice US dans data/
@@ -93,23 +91,24 @@ PARAMS = {
     "vix_low": 15.0,
     "vix_high": 20.0,
     # --- Leviers optimisables (SL / BE / TP / Obstacles / RV3 / Filtres Anti-Range) ---
-    "be_rr": 1.25,              # Break-Even à X R
-    "em_noise_pct": 0.20,       # Seuil de bruit en fraction de l'EM brut (0.20 = 20% EM)
-    "sl_vix15_mode": "m5_only", # Régime VIX < 15 : "m5_only" (SL sous bougie M5) | "half_noise" (10% EM) | "full_noise" (20% EM)
-    "sl_floor_mode": "pct",     # Plancher 15 <= VIX <= 20 : "pct" (proportionnel au prix 2015-2026) | "fixed_pts" (50/70/80 pts fixes)
+    "be_rr": 1.25,              # Break-Even à X R (>= 1.0 R pour éviter les sorties prématurées sur pullback M5)
+    "em_noise_pct": 0.20,       # Seuil de bruit en fraction de l'EM calibré (0.20 = 20% EM)
+    "sl_vix15_mode": "m5_only", # Régime VIX < 15 : "m5_only" (SL sous bougie M5) | "half_noise" (10% EM)
+    "sl_floor_mode": "pct",     # Plancher 15 <= VIX <= 20 : "pct" (proportionnel au prix 2015-2026) | "fixed_pts"
     "sl_atr_mult": 1.0,         # Multiplicateur ATR(14) H1 quand VIX > 20
     "sl_vix20_mode": "max_atr", # "max_atr" = max(SL_M5, mult*ATR_H1) | "add_atr" = SL_M5 + mult*ATR_H1
-    "rr_break": 2.5,            # TP cible (en R) sur le setup Cassure
-    "min_rr_reint": 2.0,        # RR minimum exigé sur le setup Réintégration (TP = borne opposée OPR)
-    "res_be_mode": "rv3_b",     # Obstacles vérifiés avant BE : "none" | "rv3_b" | "rv3_c" | "sr_fvg" | "all"
-    "rv3_tp_mode": "cap_c",     # Gestion du TP vs RV3 (B / C) : "none" | "reject_c" | "reject_b" | "cap_c" | "cap_b" | "ext_res"
-    "max_rr_tp": 5.0,           # Plafond RR quand rv3_tp_mode == "ext_res"
+    "rr_break": 2.5,            # TP cible de base (en R) sur le setup Cassure (>= 2.25 R)
+    "min_rr_reint": 2.0,        # RR minimum exigé sur le setup Réintégration et après plafonnement RV3 (>= 2.0 R)
+    "res_be_mode": "all",       # Obstacles vérifiés avant BE : "rv3_b" | "rv3_c" | "sr_fvg" | "all"
+    "rv3_tp_mode": "rv3_dyn",   # Gestion du TP vs RV3 : "rv3_dyn" | "cap_c" | "ext_res" | "reject_c" | "cap_b"
+    "max_rr_tp": 3.6,           # Plafond RR pour l'extension dynamique du TP (moyenne visée ~2.6 R)
     "fvg_h1_lookback_days": 15, # Jours de lookback pour les FVG H1 non mitigées
     # --- Filtres Anti-Range & Qualité de Cassure ---
     "min_vix": 14.0,            # Filtre anti-range : ignore les séances où VIX/VXN/VXD < min_vix (ex: 2017 VIX=10)
-    "min_opr_em": 0.20,         # Ignore les OPR trop compressés (< 20% de l'EM brut = range étroit à l'open)
-    "max_opr_em": 0.55,         # Ignore les OPR géants (> 55% de l'EM brut déjà consommé en 15 min)
+    "min_opr_em": 0.20,         # Ignore les OPR trop compressés (< 20% de l'EM calibré = range étroit à l'open)
+    "max_opr_em": 0.55,         # Ignore les OPR géants (> 55% de l'EM calibré déjà consommé en 15 min)
     "min_mm_spread_atr": 0.15,  # Écart minimal |MM20 - MM50| en H1 en fraction de l'ATR H1 (0 = pas de filtre de range H1)
+    "max_mm_spread_atr": 1.35,  # Écart maximal |MM20 - MM50| en H1 en fraction de l'ATR H1 (évite les fins de tendance H1 épuisées)
     "true_breakout_only": 1,    # 1 = la bougie M5 de Cassure doit franchir la borne OPR (pas la 4e bougie déjà dehors)
     "max_fill_bars": 6,         # Délai max (en bougies M5) pour déclencher l'ordre limite après le signal (6 = 30 min)
 }
@@ -524,15 +523,17 @@ def _compute_sl_rv3(side, entry, candle_low, candle_high, vix_val, atr_h1_val, e
 
 def _obstacles_long(entry, b_up, c_up, pdh, pdh_mit, psh, psh_mit, bear_fvgs, sig_close_ns, lookback_ns, res_be_mode):
     """
-    Liste triée des obstacles au-dessus de `entry` pour vérifier la règle :
+    Liste triée des obstacles pour vérifier la règle :
     `Si Distance_Obstacle < Distance_BE -> ANNULER LE TRADE`.
+    Note : pour les bornes RV3 (B+ et C+), on les inclut même si `b_up <= entry`
+    afin qu'une entrée déjà au-dessus de la moyenne 60j (distance <= 0 < Distance_BE) soit immédiatement bloquée.
     """
     if res_be_mode == "none":
         return []
     obs = []
-    if res_be_mode in ("rv3_b", "all") and b_up == b_up and b_up > entry:
+    if res_be_mode in ("rv3_b", "all") and b_up == b_up:
         obs.append(float(b_up))
-    if res_be_mode in ("rv3_c", "all") and c_up == c_up and c_up > entry:
+    if res_be_mode in ("rv3_c", "all") and c_up == c_up:
         obs.append(float(c_up))
     if res_be_mode in ("sr_fvg", "all"):
         if pdh == pdh and not pdh_mit and pdh > entry:
@@ -550,14 +551,14 @@ def _obstacles_long(entry, b_up, c_up, pdh, pdh_mit, psh, psh_mit, bear_fvgs, si
 
 def _obstacles_short(entry, b_dn, c_dn, pdl, pdl_mit, psl, psl_mit, bull_fvgs, sig_close_ns, lookback_ns, res_be_mode):
     """
-    Liste triée (décroissante) des obstacles en dessous de `entry` pour un Short.
+    Liste triée (décroissante) des obstacles pour un Short.
     """
     if res_be_mode == "none":
         return []
     obs = []
-    if res_be_mode in ("rv3_b", "all") and b_dn == b_dn and b_dn < entry:
+    if res_be_mode in ("rv3_b", "all") and b_dn == b_dn:
         obs.append(float(b_dn))
-    if res_be_mode in ("rv3_c", "all") and c_dn == c_dn and c_dn < entry:
+    if res_be_mode in ("rv3_c", "all") and c_dn == c_dn:
         obs.append(float(c_dn))
     if res_be_mode in ("sr_fvg", "all"):
         if pdl == pdl and not pdl_mit and pdl < entry:
@@ -576,35 +577,58 @@ def _obstacles_short(entry, b_dn, c_dn, pdl, pdl_mit, psl, psl_mit, bull_fvgs, s
 def _resolve_tp(side, setup, entry, risk, opr_lo, opr_hi, rr_break, min_rr_reint, max_rr_tp, b_lvl, c_lvl, sr_list, rv3_tp_mode):
     """
     Détermine le Take Profit final et sa validité selon `rv3_tp_mode` :
+      - Minimum absolu : 2.0 R (`min_ok_rr = max(2.0, min(rr_break, min_rr_reint))`).
       - Setup Cassure : TP de base = `entry +/- rr_break * risk`.
-      - Setup Réintégration : TP de base = borne opposée de l'OPR (valide si >= `min_rr_reint * risk`).
+      - Setup Réintégration : TP de base = borne opposée de l'OPR (valide si >= `max(2.0, min_rr_reint) * risk`).
       - Ajustement RV3 (`rv3_tp_mode`) :
-        * "none"     : garde le TP de base.
+        * "rv3_dyn"  : mode dynamique Romain Bailleul (RR >= 2.0, moyenne ~2.6 R) :
+                       exige que C offre au moins `min_ok_rr` R ; étend le TP vers la cible structurelle / RV3 (PDH/PSH/FVG/B/C)
+                       située entre `rr_break` R et `min(C, max_rr_tp R)`, ou plafonne sur C si `rr_break` R > C.
         * "reject_c" : annule le trade si le TP dépasse l'enveloppe 1 sigma C ("trade rêveur" au-delà de C).
         * "reject_b" : annule le trade si le TP dépasse la moyenne calibrée B.
-        * "cap_c"    : si le TP dépasse C, le plafonne sur C (à condition que C offre au moins `min_rr_reint` R).
-        * "cap_b"    : si le TP dépasse B, le plafonne sur B (à condition que B offre au moins `min_rr_reint` R).
-        * "ext_res"  : sur Cassure, étend le TP sur le premier obstacle (ou borne B/C) situé entre `rr_break` R et `max_rr_tp` R.
+        * "cap_c"    : si le TP dépasse C, le plafonne sur C (à condition que C offre au moins `min_ok_rr` R).
+        * "cap_b"    : si le TP dépasse B, le plafonne sur B (à condition que B offre au moins `min_ok_rr` R).
+        * "ext_res"  : sur Cassure, étend le TP sur le premier obstacle situé entre `rr_break` R et `max_rr_tp` R (plafonné à C).
     """
-    min_ok_rr = min(rr_break, min_rr_reint)
+    min_ok_rr = max(2.0, min(rr_break, min_rr_reint))
+    min_reint_rr = max(2.0, min_rr_reint)
 
     if side == "long":
         if setup == "Cassure":
             tp = entry + rr_break * risk
-            if rv3_tp_mode == "ext_res":
-                cands = [r for r in sr_list if entry + rr_break * risk <= r <= entry + max_rr_tp * risk]
+            if rv3_tp_mode == "rv3_dyn":
+                if c_lvl == c_lvl and (c_lvl - entry) < min_ok_rr * risk:
+                    return np.nan, False
+                hi_cap = min(float(c_lvl), entry + max_rr_tp * risk) if c_lvl == c_lvl else (entry + max_rr_tp * risk)
+                if tp > hi_cap:
+                    tp = float(hi_cap)
+                else:
+                    cands = [r for r in sr_list if tp < r <= hi_cap]
+                    if cands:
+                        tp = float(max(cands))
+                if (tp - entry) < min_ok_rr * risk:
+                    return np.nan, False
+                return float(tp), True
+            elif rv3_tp_mode == "ext_res":
+                hi_cap = min(float(c_lvl), entry + max_rr_tp * risk) if c_lvl == c_lvl else (entry + max_rr_tp * risk)
+                cands = [r for r in sr_list if entry + rr_break * risk <= r <= hi_cap]
                 if cands:
                     tp = float(min(cands))
+                if c_lvl == c_lvl and tp > c_lvl:
+                    tp = float(c_lvl)
+                if (tp - entry) < min_ok_rr * risk:
+                    return np.nan, False
+                return float(tp), True
         else:
             tp = opr_hi
-            if (tp - entry) < min_rr_reint * risk:
+            if (tp - entry) < min_reint_rr * risk:
                 return np.nan, False
 
         if rv3_tp_mode == "reject_c" and c_lvl == c_lvl and tp > c_lvl:
             return np.nan, False
         if rv3_tp_mode == "reject_b" and b_lvl == b_lvl and tp > b_lvl:
             return np.nan, False
-        if rv3_tp_mode == "cap_c" and c_lvl == c_lvl and tp > c_lvl:
+        if rv3_tp_mode in ("cap_c", "rv3_dyn") and c_lvl == c_lvl and tp > c_lvl:
             tp = float(c_lvl)
             if (tp - entry) < min_ok_rr * risk:
                 return np.nan, False
@@ -617,20 +641,39 @@ def _resolve_tp(side, setup, entry, risk, opr_lo, opr_hi, rr_break, min_rr_reint
     else:
         if setup == "Cassure":
             tp = entry - rr_break * risk
-            if rv3_tp_mode == "ext_res":
-                cands = [r for r in sr_list if entry - max_rr_tp * risk <= r <= entry - rr_break * risk]
+            if rv3_tp_mode == "rv3_dyn":
+                if c_lvl == c_lvl and (entry - c_lvl) < min_ok_rr * risk:
+                    return np.nan, False
+                lo_cap = max(float(c_lvl), entry - max_rr_tp * risk) if c_lvl == c_lvl else (entry - max_rr_tp * risk)
+                if tp < lo_cap:
+                    tp = float(lo_cap)
+                else:
+                    cands = [r for r in sr_list if lo_cap <= r < tp]
+                    if cands:
+                        tp = float(min(cands))
+                if (entry - tp) < min_ok_rr * risk:
+                    return np.nan, False
+                return float(tp), True
+            elif rv3_tp_mode == "ext_res":
+                lo_cap = max(float(c_lvl), entry - max_rr_tp * risk) if c_lvl == c_lvl else (entry - max_rr_tp * risk)
+                cands = [r for r in sr_list if lo_cap <= r <= entry - rr_break * risk]
                 if cands:
                     tp = float(max(cands))
+                if c_lvl == c_lvl and tp < c_lvl:
+                    tp = float(c_lvl)
+                if (entry - tp) < min_ok_rr * risk:
+                    return np.nan, False
+                return float(tp), True
         else:
             tp = opr_lo
-            if (entry - tp) < min_rr_reint * risk:
+            if (entry - tp) < min_reint_rr * risk:
                 return np.nan, False
 
         if rv3_tp_mode == "reject_c" and c_lvl == c_lvl and tp < c_lvl:
             return np.nan, False
         if rv3_tp_mode == "reject_b" and b_lvl == b_lvl and tp < b_lvl:
             return np.nan, False
-        if rv3_tp_mode == "cap_c" and c_lvl == c_lvl and tp < c_lvl:
+        if rv3_tp_mode in ("cap_c", "rv3_dyn") and c_lvl == c_lvl and tp < c_lvl:
             tp = float(c_lvl)
             if (entry - tp) < min_ok_rr * risk:
                 return np.nan, False
@@ -649,25 +692,26 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
     p = dict(PARAMS if p is None else p)
     rr_break = float(p.get("rr_break", 2.5))
     min_rr_reint = float(p.get("min_rr_reint", 2.0))
-    max_rr_tp = float(p.get("max_rr_tp", 5.0))
+    max_rr_tp = float(p.get("max_rr_tp", 3.6))
     cancel_rr = float(p.get("cancel_rr", 1.0))
-    be_rr = float(p.get("be_rr", 1.0))
+    be_rr = float(p.get("be_rr", 1.25))
     em_noise_pct = float(p.get("em_noise_pct", 0.20))
     res_be_mode = str(p.get("res_be_mode", "all")).lower()
-    rv3_tp_mode = str(p.get("rv3_tp_mode", "none")).lower()
-    lookback_ns = int(float(p.get("fvg_h1_lookback_days", 20)) * 86400 * 10**9)
+    rv3_tp_mode = str(p.get("rv3_tp_mode", "rv3_dyn")).lower()
+    lookback_ns = int(float(p.get("fvg_h1_lookback_days", 15)) * 86400 * 10**9)
     tz_mode = str(p.get("tz_mode", "paris")).lower()
     side_filter = str(p.get("side", "both")).lower()
     allowed_setups = {s.strip() for s in str(p.get("setups", "Cassure,Reintegration")).split(",") if s.strip()}
 
     sym_up = str(getattr(pd_, "symbol", "NAS100")).upper()
     min_sl_pts = MIN_SL_POINTS.get(sym_up, 50.0)
-    min_sl_pct = MIN_SL_PCT.get(sym_up, 0.0018)
+    min_sl_pct = MIN_SL_PCT.get(sym_up, 0.0012)
 
     min_vix = float(p.get("min_vix", 0.0))
     min_opr_em = float(p.get("min_opr_em", 0.0))
     max_opr_em = float(p.get("max_opr_em", 99.0))
     min_mm_spread_atr = float(p.get("min_mm_spread_atr", 0.0))
+    max_mm_spread_atr = float(p.get("max_mm_spread_atr", 99.0))
     true_breakout_only = int(float(p.get("true_breakout_only", 1))) != 0
     max_fill_bars = int(float(p.get("max_fill_bars", 99)))
 
@@ -715,20 +759,27 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
         vix_val = ds["vix"]
         em_brut = ds["em_brut"]
 
-        # --- Filtre Anti-Range 1 : Volatilité minimale (évite les marchés morts type 2017 VIX < 14) ---
-        if min_vix > 0.0 and vix_val == vix_val and vix_val < min_vix:
-            continue
-
-        # --- Filtre Anti-Range 2 : Taille de l'OPR relative à l'Expected Move ---
-        if em_brut == em_brut and em_brut > 0.0:
-            opr_em_ratio = (opr_hi - opr_lo) / em_brut
-            if opr_em_ratio < min_opr_em or opr_em_ratio > max_opr_em:
-                continue
-
         mean_up, std_up = ds["mean_up"], ds["std_up"]
         mean_dn, std_dn = ds["mean_dn"], ds["std_dn"]
         pdh, pdl = ds["pdh"], ds["pdl"]
         psh, psl = ds["psh"], ds["psl"]
+
+        # Calibration de l'Expected Move 30j (VIXCLS/VXNCLS/VXDCLS) sur l'équivalent VIX1D de Romain Bailleul
+        # (où le ratio 60j moyen est ~0.68, soit SL_20% = 0.20 / 0.68 = 29.4% de la borne B)
+        if em_brut == em_brut and em_brut > 0.0:
+            em_cal = ((mean_up + mean_dn) / (2.0 * 0.68)) * em_brut
+        else:
+            em_cal = np.nan
+
+        # --- Filtre Anti-Range 1 : Volatilité minimale (évite les marchés morts type 2017 VIX < 14) ---
+        if min_vix > 0.0 and vix_val == vix_val and vix_val < min_vix:
+            continue
+
+        # --- Filtre Anti-Range 2 : Taille de l'OPR relative à l'Expected Move calibré ---
+        if em_cal == em_cal and em_cal > 0.0:
+            opr_em_ratio = (opr_hi - opr_lo) / em_cal
+            if opr_em_ratio < min_opr_em or opr_em_ratio > max_opr_em:
+                continue
 
         # Niveaux RV3 (A = EM brut, B = Moyenne calibrée 60j, C = Enveloppe +1 sigma)
         if em_brut == em_brut and em_brut > 0:
@@ -738,7 +789,7 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             b_dn = open_us - mean_dn * em_brut
             c_up = open_us + (mean_up + std_up) * em_brut
             c_dn = open_us - (mean_dn + std_dn) * em_brut
-            sl_20pct = em_noise_pct * em_brut
+            sl_20pct = em_noise_pct * em_cal
         else:
             a_up = a_dn = b_up = b_dn = c_up = c_dn = sl_20pct = np.nan
 
@@ -773,8 +824,9 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             hk = float(h[k])
             lk = float(l[k])
 
-            # --- Filtre Anti-Range 3 : Écart minimal entre MM20 et MM50 H1 (évite les ranges H1 plats) ---
-            if min_mm_spread_atr > 0.0 and float(mm_spread_vec[k]) < min_mm_spread_atr:
+            # --- Filtre Anti-Range 3 & Anti-Épuisement H1 : Écart |MM20 - MM50| / ATR_H1 dans [min_mm_spread_atr, max_mm_spread_atr] ---
+            mm_sp = float(mm_spread_vec[k])
+            if (min_mm_spread_atr > 0.0 and mm_sp < min_mm_spread_atr) or (max_mm_spread_atr < 90.0 and mm_sp > max_mm_spread_atr):
                 if lk < opr_lo:
                     exited_below = True
                 if hk > opr_hi:
@@ -806,13 +858,16 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     cand_entry = opr_lo
 
                 if cand_setup is not None:
-                    sl = _compute_sl_rv3("long", cand_entry, lk, hk, vix_val, atr_h1_val, em_brut, min_sl_pts, min_sl_pct, p)
+                    sl = _compute_sl_rv3("long", cand_entry, lk, hk, vix_val, atr_h1_val, em_cal, min_sl_pts, min_sl_pct, p)
                     if sl == sl and sl < cand_entry:
                         risk = cand_entry - sl
                         be_dist = (be_rr if be_rr > 0 else 1.0) * risk
                         obs_list = _obstacles_long(cand_entry, b_up, c_up, pdh, pdh_mit, psh, psh_mit, bear_fvgs, sig_close_ns, lookback_ns, res_be_mode)
                         # Condition stricte RV3 : si Distance_Obstacle < Distance_BE -> ANNULER LE TRADE
+                        # + garde-fou RV3 B : interdit d'entrer à l'achat si B+ (moyenne 60j) est déjà dépassée ou à moins de 1R
                         blocked_be = any((obs - cand_entry) < be_dist for obs in obs_list)
+                        if res_be_mode != "none" and b_up == b_up and (b_up - cand_entry) < min(1.0, be_rr if be_rr > 0 else 1.0) * risk:
+                            blocked_be = True
                         if not blocked_be:
                             all_res = _obstacles_long(cand_entry, b_up, c_up, pdh, pdh_mit, psh, psh_mit, bear_fvgs, sig_close_ns, lookback_ns, "all")
                             tp, ok_tp = _resolve_tp("long", cand_setup, cand_entry, risk, opr_lo, opr_hi, rr_break, min_rr_reint, max_rr_tp, b_up, c_up, all_res, rv3_tp_mode)
@@ -864,12 +919,14 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     cand_entry = opr_hi
 
                 if cand_setup is not None:
-                    sl = _compute_sl_rv3("short", cand_entry, lk, hk, vix_val, atr_h1_val, em_brut, min_sl_pts, min_sl_pct, p)
+                    sl = _compute_sl_rv3("short", cand_entry, lk, hk, vix_val, atr_h1_val, em_cal, min_sl_pts, min_sl_pct, p)
                     if sl == sl and sl > cand_entry:
                         risk = sl - cand_entry
                         be_dist = (be_rr if be_rr > 0 else 1.0) * risk
                         obs_list = _obstacles_short(cand_entry, b_dn, c_dn, pdl, pdl_mit, psl, psl_mit, bull_fvgs, sig_close_ns, lookback_ns, res_be_mode)
                         blocked_be = any((cand_entry - obs) < be_dist for obs in obs_list)
+                        if res_be_mode != "none" and b_dn == b_dn and (cand_entry - b_dn) < min(1.0, be_rr if be_rr > 0 else 1.0) * risk:
+                            blocked_be = True
                         if not blocked_be:
                             all_sup = _obstacles_short(cand_entry, b_dn, c_dn, pdl, pdl_mit, psl, psl_mit, bull_fvgs, sig_close_ns, lookback_ns, "all")
                             tp, ok_tp = _resolve_tp("short", cand_setup, cand_entry, risk, opr_lo, opr_hi, rr_break, min_rr_reint, max_rr_tp, b_dn, c_dn, all_sup, rv3_tp_mode)

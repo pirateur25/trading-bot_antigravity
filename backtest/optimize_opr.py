@@ -45,25 +45,26 @@ SPACE = {
     "trend_mode": ("cat", ["mm20_50"]),
     "cancel_rr": ("cat", [1.0]),
     "sl_floor_mode": ("cat", ["pct", "fixed_pts"]),
-    "true_breakout_only": ("cat", [1, 0]),
-    # --- Leviers optimisés : SL, BE, TP et Obstacles RV3 ---
-    "be_rr": ("cat", [0.75, 1.0, 1.25, 1.5]),
-    "em_noise_pct": ("cat", [0.15, 0.20, 0.25]),
-    "sl_vix15_mode": ("cat", ["m5_only", "half_noise", "full_noise"]),
-    "sl_atr_mult": ("cat", [0.5, 0.75, 1.0, 1.25, 1.5]),
     "sl_vix20_mode": ("cat", ["max_atr", "add_atr"]),
-    "rr_break": ("cat", [1.5, 2.0, 2.5, 3.0, 3.5]),
-    "min_rr_reint": ("cat", [1.5, 2.0, 2.5]),
-    "res_be_mode": ("cat", ["none", "rv3_b", "rv3_c", "sr_fvg", "all"]),
-    "rv3_tp_mode": ("cat", ["none", "reject_c", "reject_b", "cap_c", "cap_b", "ext_res"]),
-    "fvg_h1_lookback_days": ("cat", [10, 20, 30]),
-    # --- Leviers Anti-Range & Fenêtre d'exécution ---
-    "min_vix": ("cat", [0.0, 13.0, 14.0, 15.0, 16.0]),
-    "min_opr_em": ("cat", [0.0, 0.15, 0.20, 0.25]),
-    "max_opr_em": ("cat", [0.45, 0.55, 0.70, 99.0]),
-    "min_mm_spread_atr": ("cat", [0.0, 0.15, 0.30, 0.45]),
+    "true_breakout_only": ("cat", [1, 0]),
+    # --- Leviers optimisés : SL, BE, TP dynamique RV3 et Obstacles ---
+    "be_rr": ("cat", [1.0, 1.25, 1.5]),
+    "em_noise_pct": ("cat", [0.15, 0.20, 0.25]),
+    "sl_vix15_mode": ("cat", ["m5_only", "half_noise"]),
+    "sl_atr_mult": ("cat", [0.5, 0.75, 1.0, 1.25]),
+    "rr_break": ("cat", [2.25, 2.5, 2.75, 3.0, 3.5]),
+    "min_rr_reint": ("cat", [2.0, 2.25, 2.5]),
+    "res_be_mode": ("cat", ["rv3_b", "rv3_c", "sr_fvg", "all"]),
+    "rv3_tp_mode": ("cat", ["rv3_dyn", "cap_c", "ext_res", "reject_c"]),
+    "fvg_h1_lookback_days": ("cat", [10, 15, 20, 30]),
+    # --- Leviers Anti-Range, Anti-Épuisement H1 & Fenêtre d'exécution ---
+    "min_vix": ("cat", [13.0, 14.0, 15.0]),
+    "min_opr_em": ("cat", [0.15, 0.20, 0.25]),
+    "max_opr_em": ("cat", [0.45, 0.55, 0.65]),
+    "min_mm_spread_atr": ("cat", [0.0, 0.10, 0.20, 0.30]),
+    "max_mm_spread_atr": ("cat", [1.15, 1.35, 1.60, 99.0]),
     "end_hour": ("cat", [17, 18, 19]),
-    "max_fill_bars": ("cat", [3, 6, 12, 99]),
+    "max_fill_bars": ("cat", [4, 6, 10, 16]),
 }
 
 FROZEN_DEFAULT = {
@@ -73,6 +74,7 @@ FROZEN_DEFAULT = {
     "trend_mode": "mm20_50",
     "cancel_rr": 1.0,
     "sl_floor_mode": "pct",
+    "sl_vix20_mode": "max_atr",
     "true_breakout_only": 1,
 }
 
@@ -93,14 +95,15 @@ REFERENCE = {
     "sl_vix20_mode": "max_atr",
     "rr_break": 2.5,
     "min_rr_reint": 2.0,
-    "res_be_mode": "rv3_b",
-    "rv3_tp_mode": "cap_c",
-    "max_rr_tp": 5.0,
+    "res_be_mode": "all",
+    "rv3_tp_mode": "rv3_dyn",
+    "max_rr_tp": 3.6,
     "fvg_h1_lookback_days": 15,
     "min_vix": 14.0,
     "min_opr_em": 0.20,
     "max_opr_em": 0.55,
     "min_mm_spread_atr": 0.15,
+    "max_mm_spread_atr": 1.35,
     "true_breakout_only": 1,
     "max_fill_bars": 6,
 }
@@ -144,10 +147,11 @@ def suggest_params(trial, frozen, base):
         "min_opr_em",
         "max_opr_em",
         "min_mm_spread_atr",
+        "max_mm_spread_atr",
         "end_hour",
         "max_fill_bars",
     )
-    if p["res_be_mode"] in ("sr_fvg", "all") or p["rv3_tp_mode"] == "ext_res":
+    if p["res_be_mode"] in ("sr_fvg", "all") or p["rv3_tp_mode"] in ("rv3_dyn", "ext_res"):
         pick("fvg_h1_lookback_days")
     return p
 

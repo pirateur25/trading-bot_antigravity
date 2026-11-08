@@ -307,7 +307,7 @@ def main():
 
     full_recap = "📋 RÉCAP\n" + "\n".join(recap)
     if opr_setup_recap:
-        full_recap += "\n\n🕒 BILAN OPR PAR SETUP (Cassure RR=2.5 | Réintégration RR>=2.0, 15h30-19h30 FR)\n" + "\n\n".join(opr_setup_recap)
+        full_recap += "\n\n🕒 BILAN OPR PAR SETUP (Cassure RR>=2.25 dyn RV3 | Réintégration RR>=2.0, 15h30-19h30 FR)\n" + "\n\n".join(opr_setup_recap)
     tg(full_recap)
     print(full_recap)
 
@@ -315,9 +315,9 @@ def main():
         lines = []
         for fmode in ("1phase", "2phases"):
             lines.append(f"🎯 Simulation FTMO {fmode} (départs tous les 3 j, pire cas intra-trade, superposition active)")
-            # 1) OPR seule
+            # 1) OPR seule (0.5%, 0.75%, 1.0% car DD max OPR ~5% à 0.5%)
             if len(dfs["OPR"]) > 0:
-                for ropr in (a.risk_opr, a.risk_opr * 0.75, a.risk_opr * 1.5):
+                for ropr in (a.risk_opr, a.risk_opr * 1.5, a.risk_opr * 2.0):
                     res = sim_ch.simulate_challenge(dfs["OPR"], CAPITAL, ropr, fmode, 3)
                     lines.append(
                         f"[OPR seule {ropr:g}%] réussite {res['success_pct']:.0f}% | échec DD jour {res['breach_daily_pct']:.0f}% / DD total "
