@@ -1,4 +1,4 @@
-va"""backtest/opt_common.py — briques communes aux optimiseurs Optuna (OTE et FVG), avec Walk-Forward et détection de plateaux."""
+"""backtest/opt_common.py — briques communes aux optimiseurs Optuna (OTE et FVG), avec Walk-Forward et détection de plateaux."""
 import json
 import os
 import time
