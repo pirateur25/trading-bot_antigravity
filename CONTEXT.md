@@ -30,6 +30,19 @@ Backtests lancés sur GitHub Actions (workflow `.github/workflows/backtest.yml`)
     - Interdiction absolue d'entrer si la moyenne 60j `B` est déjà dépassée ou à moins de `1.0 R`, ou si un obstacle (`B`, `C`, `PDH/PDL`, `PSH/PSL`, `FVG H1`) bloque le Break-Even (`be_rr >= 1.0`).
     - Mode `"rv3_dyn"` : RR minimum strict de `2.0 R` et extension dynamique vers les cibles structurelles / bornes RV3 `B`/`C` jusqu'à `3.6 R` (moyenne ~`2.6 R`).
   - **Visualiseur RV3** (`viewer/template.html` & `viewer/viewer.html`) : affiche l'Open US (jaune), les lignes A (gris), B (cyan/rouge), C (teal/rouge foncé), les zones ombrées `B -> C` et le tableau complet de calibration RV3 en bas à droite.
+- **CRYPTO V4 — A2-R Stratégie SMC Crypto Futures (MoonX / Cubrik)** (`backtest/strategy_crypto_v4.py`, `backtest/run_crypto_v4.py`, workflow `.github/workflows/backtest_crypto_v4.yml`) :
+  - **9 cryptos Futures** : `BTC, ETH, SOL, XRP, AVAX, ZEC, INJ, PUMP, HYPE` (téléchargement auto 5m via Binance USD-M Futures, Binance Spot, Bybit Linear Futures, KuCoin, Hyperliquid dans `backtest/data_crypto.py`).
+  - **Sizing fixe** : marge `200 USDT` par instrument, levier `×30` isolé (`notionnel = 6 000 USDT`), 1 position ou ordre au repos max par instrument.
+  - **TP / SL & Trailing SL (sur ROI marge)** :
+    - `1 R = -50 %` de ROI sur marge (`-100 USDT`, mouvement de prix de `1.6667 %`).
+    - `TP fixe = +300 %` de ROI sur marge (`+6 R = +600 USDT`, mouvement de prix de `10.0 %`).
+    - `Trailing SL` : `ROI >= +50%` $\rightarrow$ SL au BE (`0%` / `0 R`) ; `ROI >= +100%` $\rightarrow$ SL à `+50%` (`+1 R`) ; `ROI >= +150%` $\rightarrow$ SL à `+100%` (`+2 R`) ; `ROI >= +200%` $\rightarrow$ SL à `+150%` (`+3 R`).
+  - **Détection & Ré-analyse toutes les 30 min** :
+    - Biais H4 : `net/range` sur 8 clôtures 4h (`> +0.35` haussier, `< -0.35` baissier, sinon neutre).
+    - Fenêtre M15 : `range (haut - bas) / prix >= 0.4 %` sur 16 clôtures 15m ; direction H4 ou momentum M15 si H4 neutre.
+    - POI : `long = after_hi - 0.5 * (after_hi - win_lo)` (`POI < prix`), `short = after_lo + 0.5 * (win_hi - after_lo)` (`POI > prix`).
+    - Entrée : au marché si `prix <= POI * 1.0005` (long) / `prix >= POI * 0.9995` (short), sinon limite à `POI * 0.999` (long) / `POI * 1.001` (short), ré-ajustée si écart `> 0.1 %`.
+  - **Reporting complet** : RR moyen, Gains/RR et Drawdown max par Mois (`CRYPTO_V4_monthly.csv`), par Année (`CRYPTO_V4_yearly.csv`), par crypto et portefeuille global (`PORTFOLIO_CRYPTO_V4.png`).
 - Simulation FTMO (`backtest/sim_challenge.py`) avec superposition des trades : OPR seule / OTE+FVG+OPR / OTE+FVG.
 - Visualiseur : `viewer/template.html` -> `viewer/viewer.html` via
   `python3 backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30 --out viewer/viewer.html` (fonctionne sans numpy).

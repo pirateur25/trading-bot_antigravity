@@ -31,7 +31,7 @@ on:
         description: "Stratégies à lancer"
         type: choice
         default: "all"
-        options: ["all", "opr_only", "both", "ote_only", "fvg_only"]
+        options: ["all", "crypto_v4", "opr_only", "both", "ote_only", "fvg_only"]
       sim_challenge:
         description: "Simuler le challenge FTMO ?"
         type: choice

@@ -15,11 +15,26 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import requests
 
-# Symboles crypto disponibles sur FTMO (avec leur ticker Binance pour le téléchargement)
+# Symboles crypto disponibles sur FTMO et Crypto V4 (MoonX / Futures)
 FTMO_CRYPTO = {
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "XRP": "XRPUSDT",
+    "AVAX": "AVAXUSDT",
+    "ZEC": "ZECUSDT",
+    "INJ": "INJUSDT",
+    "PUMP": "PUMPUSDT",
+    "HYPE": "HYPEUSDT",
     "BTCUSD": "BTCUSDT",
-    "ETHUSD": "ETHUSDT", 
+    "ETHUSD": "ETHUSDT",
+    "SOLUSD": "SOLUSDT",
     "XRPUSD": "XRPUSDT",
+    "AVAXUSD": "AVAXUSDT",
+    "ZECUSD": "ZECUSDT",
+    "INJUSD": "INJUSDT",
+    "PUMPUSD": "PUMPUSDT",
+    "HYPEUSD": "HYPEUSDT",
     "LTCUSD": "LTCUSDT",
     "ADAUSD": "ADAUSDT",
     "DOGEUSD": "DOGEUSDT",
@@ -28,9 +43,18 @@ FTMO_CRYPTO = {
     "NEOUSD": "NEOUSDT",
     "DOTUSD": "DOTUSDT",
 }
-# Traduit un symbole FTMO en symbole Binance
+
+
+# Traduit un symbole (ex: BTC, BTCUSD, HYPE, HYPEUSD) en symbole USDT Binance/Bybit
 def ftmo_to_binance(ftmo_sym):
-    return FTMO_CRYPTO.get(ftmo_sym, ftmo_sym.replace("USD", "USDT"))
+    s = ftmo_sym.strip().upper()
+    if s in FTMO_CRYPTO:
+        return FTMO_CRYPTO[s]
+    if s.endswith("USDT"):
+        return s
+    if s.endswith("USD"):
+        return s[:-3] + "USDT"
+    return s + "USDT"
 
 SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 KUCOIN_TYPES = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min",
@@ -87,8 +111,7 @@ def _parse_vision_zip(content):
     return df.values.tolist()
 
 
-def fetch_binance_vision(symbol, interval, start_ms, end_ms):
-    base = "https://data.binance.vision/data/spot"
+def _fetch_binance_vision_base(base, symbol, interval, start_ms, end_ms):
     today = datetime.now(timezone.utc).date()
     first_this_month = today.replace(day=1)
     prev_month_start = (first_this_month - timedelta(days=1)).replace(day=1)
@@ -119,6 +142,14 @@ def fetch_binance_vision(symbol, interval, start_ms, end_ms):
     return rows
 
 
+def fetch_binance_futures(symbol, interval, start_ms, end_ms):
+    return _fetch_binance_vision_base("https://data.binance.vision/data/futures/um", symbol, interval, start_ms, end_ms)
+
+
+def fetch_binance_vision(symbol, interval, start_ms, end_ms):
+    return _fetch_binance_vision_base("https://data.binance.vision/data/spot", symbol, interval, start_ms, end_ms)
+
+
 # ---------------------------------------------------------------- KuCoin
 
 def fetch_kucoin(symbol, interval, start_ms, end_ms):
@@ -133,33 +164,85 @@ def fetch_kucoin(symbol, interval, start_ms, end_ms):
         data = (r.json().get("data") if r is not None else None) or []
         for t, o, c, h, l, v, _ in data:  # KuCoin : time, open, close, high, low, volume, turnover
             rows.append([int(t) * 1000, o, h, l, c, v])
+        if not data:
+            break
         cur_end = cur_start
         time.sleep(0.15)
     return rows
 
 
-# ---------------------------------------------------------------- Bybit
+# ---------------------------------------------------------------- Bybit (Linear Futures & Spot)
 
-def fetch_bybit(symbol, interval, start_ms, end_ms):
+def _fetch_bybit_cat(category, symbol, interval, start_ms, end_ms):
     step = SECONDS[interval] * 1000
     cur_end = end_ms
     rows = []
+    empty_streak = 0
     while cur_end > start_ms:
         cur_start = max(start_ms, cur_end - 1000 * step)
         r = _get("https://api.bybit.com/v5/market/kline",
-                 {"category": "spot", "symbol": symbol, "interval": BYBIT_INTERVALS[interval],
+                 {"category": category, "symbol": symbol, "interval": BYBIT_INTERVALS[interval],
                   "start": cur_start, "end": cur_end, "limit": 1000})
         data = []
         if r is not None:
             data = (r.json().get("result") or {}).get("list") or []
-        for t, o, h, l, c, v, _ in data:  # Bybit : start, open, high, low, close, volume, turnover
+        for row in data:  # Bybit : start, open, high, low, close, volume, turnover
+            t, o, h, l, c, v = row[0], row[1], row[2], row[3], row[4], row[5]
             rows.append([int(t), o, h, l, c, v])
+        if not data:
+            empty_streak += 1
+            if empty_streak >= 3:
+                break
+        else:
+            empty_streak = 0
         cur_end = cur_start
+        time.sleep(0.12)
+    return rows
+
+
+def fetch_bybit_linear(symbol, interval, start_ms, end_ms):
+    return _fetch_bybit_cat("linear", symbol, interval, start_ms, end_ms)
+
+
+def fetch_bybit(symbol, interval, start_ms, end_ms):
+    return _fetch_bybit_cat("spot", symbol, interval, start_ms, end_ms)
+
+
+# ---------------------------------------------------------------- Hyperliquid (pour HYPE, PUMP, etc.)
+
+def fetch_hyperliquid(symbol, interval, start_ms, end_ms):
+    coin = symbol[:-4] if symbol.endswith("USDT") else (symbol[:-3] if symbol.endswith("USD") else symbol)
+    step = SECONDS[interval] * 1000
+    cur_start = max(start_ms, end_ms - 5000 * step * 60)
+    rows = []
+    cur = cur_start
+    while cur < end_ms:
+        nxt = min(end_ms, cur + 4500 * step)
+        try:
+            r = requests.post(
+                "https://api.hyperliquid.xyz/info",
+                json={"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": cur, "endTime": nxt}},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                data = r.json() or []
+                for item in data:
+                    rows.append([int(item["t"]), item["o"], item["h"], item["l"], item["c"], item.get("v", 0.0)])
+        except Exception:
+            break
+        cur = nxt
         time.sleep(0.15)
     return rows
 
 
-SOURCES = {"binance_vision": fetch_binance_vision, "kucoin": fetch_kucoin, "bybit": fetch_bybit}
+SOURCES = {
+    "binance_futures": fetch_binance_futures,
+    "binance_vision": fetch_binance_vision,
+    "bybit_linear": fetch_bybit_linear,
+    "bybit": fetch_bybit,
+    "kucoin": fetch_kucoin,
+    "hyperliquid": fetch_hyperliquid,
+}
 
 
 def load(symbol, interval, start, end=None, source="auto", use_cache=True):

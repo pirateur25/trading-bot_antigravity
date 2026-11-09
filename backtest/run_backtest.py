@@ -185,7 +185,7 @@ def main():
     ap.add_argument("--risk_fvg", type=float, default=0.75)
     ap.add_argument("--risk_opr", type=float, default=0.5)
     ap.add_argument("--leverage", type=float, default=0.0, help="0 = levier FTMO par actif (realism.py)")
-    ap.add_argument("--mode", default="all", choices=["all", "both", "opr_only", "ote_only", "fvg_only"])
+    ap.add_argument("--mode", default="all", choices=["all", "both", "opr_only", "ote_only", "fvg_only", "crypto_v4"])
     ap.add_argument("--sim_challenge", default="oui")
     ap.add_argument("--ftmo_mode", default="1phase", choices=["1phase", "2phases"])
     ap.add_argument("--use_best_ote", default="oui")
@@ -199,6 +199,19 @@ def main():
     ap.add_argument("--outdir", default="results")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
+
+    if a.mode == "crypto_v4":
+        import run_crypto_v4 as rcv4
+        sys.argv = [
+            sys.argv[0],
+            "--symbols", a.crypto if a.crypto.strip() else ",".join(rcv4.scv4.CRYPTO_V4_SYMBOLS),
+            "--datadir", a.datadir,
+            "--start", a.start if a.start != "2015-01-01" else "2022-01-01",
+            "--end", a.end,
+            "--outdir", a.outdir,
+        ]
+        rcv4.main()
+        return
 
     forex = [normalize_sym(s) for s in a.symbols.split(",") if s.strip()]
     crypto = [normalize_sym(s) for s in a.crypto.split(",") if s.strip()]

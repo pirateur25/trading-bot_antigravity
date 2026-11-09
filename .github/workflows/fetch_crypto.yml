@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Cryptos FTMO (ex: BTCUSD,ETHUSD,XRPUSD)"
-        default: "BTCUSD,ETHUSD,XRPUSD,LTCUSD,ADAUSD,DOGEUSD"
+        description: "Cryptos Futures / FTMO (ex: BTC,ETH,SOL,XRP,AVAX,ZEC,INJ,PUMP,HYPE)"
+        default: "BTCUSD,ETHUSD,SOLUSD,XRPUSD,AVAXUSD,ZECUSD,INJUSD,PUMPUSD,HYPEUSD"
       start:
         description: "Date de début"
         default: "2021-01-01"

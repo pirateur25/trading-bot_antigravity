@@ -1,0 +1,83 @@
+name: Backtest CRYPTO V4 (SMC Futures)
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Cryptos Futures à backtester (les 9 du PDF par défaut)"
+        default: "BTC,ETH,SOL,XRP,AVAX,ZEC,INJ,PUMP,HYPE"
+      start:
+        description: "Date de début (AAAA-MM-JJ)"
+        default: "2022-01-01"
+      end:
+        description: "Date de fin (vide = jusqu'à aujourd'hui)"
+        default: ""
+      capital:
+        description: "Capital de référence portefeuille en USDT (9 x 200 = 1800 USDT)"
+        default: "1800"
+      fee_pct:
+        description: "Frais par ordre en % du notionnel (0.02 = 0.02% futures standard, 0 = brut)"
+        default: "0.02"
+      trail_mode:
+        description: "Mode de vérification du Trailing SL"
+        type: choice
+        default: "check_30m"
+        options: ["check_30m", "intra"]
+      params:
+        description: "Réglages supplémentaires (ex: margin_usdt=200;leverage=30;tp_roi_pct=300;sl_roi_pct=50)"
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  backtest_crypto_v4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: Lancement du Backtest CRYPTO V4 (Téléchargement auto + Rapport Mensuel/Annuel + Telegram)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          SYMBOLS: ${{ inputs.symbols }}
+          START: ${{ inputs.start }}
+          END: ${{ inputs.end }}
+          CAPITAL: ${{ inputs.capital }}
+          FEE_PCT: ${{ inputs.fee_pct }}
+          TRAIL_MODE: ${{ inputs.trail_mode }}
+          EXTRA_PARAMS: ${{ inputs.params }}
+        run: |
+          python backtest/run_crypto_v4.py \
+            --symbols "$SYMBOLS" \
+            --start "$START" \
+            --end "$END" \
+            --capital "$CAPITAL" \
+            --fee_pct "$FEE_PCT" \
+            --trail_mode "$TRAIL_MODE" \
+            --params "$EXTRA_PARAMS" \
+            --outdir results
+
+      - name: Sauvegarde des données crypto téléchargées dans data/
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/*.csv.gz || true
+          git diff --cached --quiet || git commit -m "chore(data): cache historiques 5m Crypto V4 $(date -u +%Y-%m-%d)"
+          git push || echo "Pas de nouvelles données à pousser"
+
+      - name: Upload des résultats (CSV mensuel/annuel, rapport, graphiques, viewer_trades.json)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultats-crypto-v4
+          path: results/
+
