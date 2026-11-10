@@ -173,12 +173,13 @@ def main():
     ap.add_argument(
         "--symbols",
         default=",".join(scv4.CRYPTO_V4_SYMBOLS),
-        help="Cryptos à backtester (défaut: BTC,ETH,SOL,XRP,AVAX,ZEC,INJ,PUMP,HYPE)",
+        help="Cryptos à backtester (défaut: BTC,ETH,SOL,AVAX,INJ)",
     )
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--start", default="2022-01-01")
     ap.add_argument("--end", default="")
-    ap.add_argument("--capital", type=float, default=1800.0, help="Capital initial portefeuille USDT (défaut: 9 x 200 = 1800 USDT)")
+    ap.add_argument("--capital", type=float, default=600.0, help="Capital initial portefeuille USDT (défaut: 600 USDT)")
+    ap.add_argument("--risk_pct", type=float, default=1.5, help="Risque par trade en %% du capital (1.5 = 9 USDT/SL sur 600 USDT, soit 18 USDT de marge à x30 ; 0 = marge fixe margin_usdt)")
     ap.add_argument("--fee_pct", type=float, default=0.02, help="Frais par ordre en %% du notionnel (0.02 = 0.02%%, 0 = sans frais)")
     ap.add_argument("--trail_mode", default="check_30m", choices=["check_30m", "intra"])
     ap.add_argument("--params", default="", help="Réglages supplémentaires k=v;k2=v2")
@@ -195,14 +196,19 @@ def main():
     p = scv4.parse_params(a.params)
     p["fee_pct"] = float(a.fee_pct)
     p["trail_mode"] = a.trail_mode
-    margin_usdt = float(p.get("margin_usdt", 200.0))
-    one_r_usdt = margin_usdt * (float(p.get("sl_roi_pct", 50.0)) / 100.0)
-    start_cap = float(a.capital) if a.capital > 0 else float(len(syms) * margin_usdt)
+    sl_roi = float(p.get("sl_roi_pct", 50.0))
+    start_cap = float(a.capital) if a.capital > 0 else 600.0
+    if a.risk_pct > 0:
+        one_r_usdt = start_cap * (float(a.risk_pct) / 100.0)
+        margin_usdt = one_r_usdt / (sl_roi / 100.0)
+    else:
+        margin_usdt = float(p.get("margin_usdt", 200.0))
+        one_r_usdt = margin_usdt * (sl_roi / 100.0)
 
     tg(
-        f"🚀 Backtest CRYPTO V4 (SMC Futures x{p['leverage']:g}, marge {margin_usdt:.0f} USDT)\n"
+        f"🚀 Backtest CRYPTO V4 Optimisée (SMC Futures x{p['leverage']:g}, marge {margin_usdt:.1f} USDT, 1R={one_r_usdt:.1f} USDT)\n"
         f"Actifs ({len(syms)}) : {', '.join(syms)}\n"
-        f"Période : depuis {a.start} | Frais : {a.fee_pct:.3f}%/ordre | Trail : {a.trail_mode}"
+        f"Période : depuis {a.start} | Capital : {start_cap:.0f} USDT | Risque : {a.risk_pct:g}% | Frais : {a.fee_pct:.3f}%/ordre"
     )
 
     all_trades_list = []
@@ -223,7 +229,7 @@ def main():
         i1 = P.idx_at(pd.Timestamp(a.end) + pd.Timedelta(days=1)) if a.end else P.n
 
         try:
-            tr, eq = scv4.run(P, capital=start_cap, risk_pct=0.0, fee_pct=a.fee_pct, leverage=p["leverage"], p=p, i0=i0, i1=i1)
+            tr, eq = scv4.run(P, capital=start_cap, risk_pct=a.risk_pct, fee_pct=a.fee_pct, leverage=p["leverage"], p=p, i0=i0, i1=i1)
         except Exception as e:
             msg = f"❌ {sym} erreur exécution : {type(e).__name__}: {e}"
             print(msg, flush=True)
@@ -303,7 +309,7 @@ def main():
         if viewer_trades:
             ve.write_trades_json(viewer_trades, os.path.join(a.outdir, "viewer_trades.json"))
 
-        report_txt = scv4.format_crypto_v4_report(all_trades, per_sym_stats, start_capital=start_cap, p=p)
+        report_txt = scv4.format_crypto_v4_report(all_trades, per_sym_stats, start_capital=start_cap, risk_pct=a.risk_pct, p=p)
         rep_path = os.path.join(a.outdir, "CRYPTO_V4_report.txt")
         with open(rep_path, "w", encoding="utf-8") as f:
             f.write(report_txt)

@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Cryptos Futures à backtester (les 9 du PDF par défaut)"
-        default: "BTC,ETH,SOL,XRP,AVAX,ZEC,INJ,PUMP,HYPE"
+        description: "Cryptos Futures à backtester (les 5 majeures rentables par défaut)"
+        default: "BTC,ETH,SOL,AVAX,INJ"
       start:
         description: "Date de début (AAAA-MM-JJ)"
         default: "2022-01-01"
@@ -13,8 +13,11 @@ on:
         description: "Date de fin (vide = jusqu'à aujourd'hui)"
         default: ""
       capital:
-        description: "Capital de référence portefeuille en USDT (9 x 200 = 1800 USDT)"
-        default: "1800"
+        description: "Capital de départ en USDT (ex: 600 pour 552-800 EUR)"
+        default: "600"
+      risk_pct:
+        description: "Risque par trade en % du capital (1.5 = 9 USDT/SL, soit 18 USDT de marge à x30 ; 0 = marge fixe 200 USDT)"
+        default: "1.5"
       fee_pct:
         description: "Frais par ordre en % du notionnel (0.02 = 0.02% futures standard, 0 = brut)"
         default: "0.02"
@@ -24,7 +27,7 @@ on:
         default: "check_30m"
         options: ["check_30m", "intra"]
       params:
-        description: "Réglages supplémentaires (ex: margin_usdt=200;leverage=30;tp_roi_pct=300;sl_roi_pct=50)"
+        description: "Réglages supplémentaires (ex: m15_max_range_pct=1.6;sl_cooldown_hours=2.0;block_same_poi=1)"
         default: ""
 
 permissions:
@@ -52,6 +55,7 @@ jobs:
           START: ${{ inputs.start }}
           END: ${{ inputs.end }}
           CAPITAL: ${{ inputs.capital }}
+          RISK_PCT: ${{ inputs.risk_pct }}
           FEE_PCT: ${{ inputs.fee_pct }}
           TRAIL_MODE: ${{ inputs.trail_mode }}
           EXTRA_PARAMS: ${{ inputs.params }}
@@ -61,6 +65,7 @@ jobs:
             --start "$START" \
             --end "$END" \
             --capital "$CAPITAL" \
+            --risk_pct "$RISK_PCT" \
             --fee_pct "$FEE_PCT" \
             --trail_mode "$TRAIL_MODE" \
             --params "$EXTRA_PARAMS" \

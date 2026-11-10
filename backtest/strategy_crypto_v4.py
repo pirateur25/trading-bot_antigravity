@@ -1,57 +1,47 @@
 """
-backtest/strategy_crypto_v4.py — Stratégie CRYPTO V4 (A2-R — Stratégie SMC — Crypto Futures).
+backtest/strategy_crypto_v4.py — Stratégie CRYPTO V4 (A2-R — Stratégie SMC — Crypto Futures) + Filtres Anti-Krach & Sizing Réel.
 
-Spécifications exactes du PDF (MoonX / Cubrik) :
+Spécifications du PDF (MoonX / Cubrik) + Améliorations validées :
   1. Cadence :
      - Check toutes les 30 minutes (:00 et :30 UTC, soit à la clôture des bougies 5m :25 et :55).
-  2. Sizing (fixe) :
-     - Marge : 200 USDT fixe par instrument (`margin_usdt = 200.0`).
+  2. Sizing (adaptable à un petit capital 550-800 USDT ou marge fixe 200 USDT) :
      - Levier : x30, mode isolé (`leverage = 30.0`).
-     - Quantité : `(marge * levier) / prix = 6 000 / prix`.
-     - Exposition : une par instrument (position ouverte OU ordre limite au repos, jamais les deux).
-     - Unité de risque (1 R) : SL initial = -50 % de ROI sur marge = -100 USDT (variation de prix de 1.6667 %).
-  3. Instruments (9 crypto futures) :
-     - BTC, ETH, SOL, XRP, AVAX, ZEC, INJ, PUMP, HYPE (évalués à chaque run sans filtre de série de pertes).
+     - Unité de risque (1 R) : SL initial = -50 % de ROI sur marge (variation de prix de 1.6667 %).
+     - Si `risk_pct > 0` (ex: 1.5 % sur un capital de 600 USDT) :
+       * 1 R = `capital * (risk_pct / 100)` (ex: 9 USDT de risque max par SL, soit 18 USDT de marge isolée à x30).
+     - Si `risk_pct <= 0` : marge fixe `margin_usdt` (ex: 200 USDT -> 1 R = 100 USDT).
+  3. Instruments retenus par défaut (les 5 cryptos majeures liquides et rentables) :
+     - BTC, ETH, SOL, AVAX, INJ (exclusion par défaut des cryptos ultra-bruitées PUMP, HYPE, ZEC où le SL fixe à 1.667 % est balayé).
   4. Étape 2 — Gestion des positions ouvertes (levier x30, isolé) :
-     - ROI sur marge (%) = `levier * (prix - entree) / entree * 100` (long) | `levier * (entree - prix) / entree * 100` (short).
-     - TP fixe : +300 % de ROI sur marge (+6.0 R = +600 USDT), posé dès l'ouverture (clôture 100 % de la position).
-     - SL initial : -50 % de ROI sur marge (-1.0 R = -100 USDT), posé dès l'ouverture.
+     - TP fixe : +300 % de ROI sur marge (+6.0 R), posé dès l'ouverture (clôture 100 % de la position).
+     - SL initial : -50 % de ROI sur marge (-1.0 R), posé dès l'ouverture.
      - Trailing du SL (ne recule jamais, seul le palier le plus haut atteint s'applique) :
        * ROI >= +50 %  (+1 R) -> SL remonté au break-even (0 % ROI = 0 R, prix d'entrée)
-       * ROI >= +100 % (+2 R) -> SL remonté à +50 % de profit (+1 R = +100 USDT)
-       * ROI >= +150 % (+3 R) -> SL remonté à +100 % de profit (+2 R = +200 USDT)
-       * ROI >= +200 % (+4 R) -> SL remonté à +150 % de profit (+3 R = +300 USDT)
-  5. Étape 3 — Détection & Ré-analyse à chaque run (toutes les 30 min) :
-     - Biais H4 : `net / range` des 8 dernières clôtures 4h. Haussier si > +0.35, baissier si < -0.35, sinon neutre.
-     - Fenêtre M15 : `range (haut - bas) / prix >= 0.4 %` sur les 16 dernières clôtures 15m.
-     - Direction : celle du biais H4 ; si neutre, signe du momentum M15 (`net / range`).
-     - POI :
-       * long  = `after_hi - 0.5 * (after_hi - win_lo)`
-       * short = `after_lo + 0.5 * (win_hi - after_lo)`
-     - Côté : un long exige `POI < prix`, un short exige `POI > prix`. Sinon, sauter (pas de fallback).
-     - Type d'entrée :
-       * Au marché si le prix traverse le POI (`long : prix <= POI * 1.0005` ; `short : prix >= POI * 0.9995`).
-       * Sinon ordre limite au POI ajusté (`long : POI * 0.999` ; `short : POI * 1.001`).
-     - Ordres au repos : ré-analysés à chaque run de 30 min ; annulés si la thèse est cassée (fenêtre M15 < 0.4 %,
-       direction inversée, côté invalide), ou ajustés si le nouveau POI s'écarte de plus de 0.1 % du prix de l'ordre.
+       * ROI >= +100 % (+2 R) -> SL remonté à +50 % de profit (+1 R)
+       * ROI >= +150 % (+3 R) -> SL remonté à +100 % de profit (+2 R)
+       * ROI >= +200 % (+4 R) -> SL remonté à +150 % de profit (+3 R)
+  5. Étape 3 — Détection, Filtres Anti-Krach & Ré-analyse à chaque run (toutes les 30 min) :
+     - Biais H4 : `net / range` des 8 dernières clôtures 4h (> +0.35 haussier, < -0.35 baissier, sinon neutre).
+     - Fenêtre M15 encadrée (`0.4 % <= range M15 <= m15_max_range_pct`) :
+       * Minimum 0.4 % pour éviter les marchés morts.
+       * Maximum `m15_max_range_pct` (1.6 % par défaut) pour interdire d'entrer avec un SL fixe de 1.667 % au milieu d'un krach ou d'une explosion de volatilité M15.
+     - Anti-répétition après SL (`block_same_poi = 1`, `sl_cooldown_hours = 1.0`) :
+       * Après un Stop Loss, interdit de reprendre exactement le même POI cassé (`écart < 0.15 %`) et impose une pause d'observation de 1h sur cet actif pour éviter d'encaisser 4 SL consécutifs sur la même jambe baissière.
 """
 import numpy as np
 import pandas as pd
 
+# Les 5 cryptos majeures rentables par défaut (les 9 restent testables via l'input symbols du workflow)
 CRYPTO_V4_SYMBOLS = [
     "BTCUSD",
     "ETHUSD",
     "SOLUSD",
-    "XRPUSD",
     "AVAXUSD",
-    "ZECUSD",
     "INJUSD",
-    "PUMPUSD",
-    "HYPEUSD",
 ]
 
 PARAMS = {
-    "margin_usdt": 200.0,       # Marge fixe 200 USDT par instrument
+    "margin_usdt": 18.0,        # Marge par défaut adaptée à un capital de 600 USDT (18 USDT de marge à x30 = 9 USDT par SL = 1.5% de risque)
     "leverage": 30.0,           # Levier x30 isolé
     "tp_roi_pct": 300.0,        # TP fixe : +300% de ROI sur marge (+6 R)
     "sl_roi_pct": 50.0,         # SL initial : -50% de ROI sur marge (-1 R)
@@ -59,12 +49,16 @@ PARAMS = {
     "h4_thresh": 0.35,          # Seuil biais H4 : > +0.35 haussier, < -0.35 baissier
     "m15_lookback": 16,         # 16 dernières clôtures 15m
     "m15_min_range_pct": 0.4,   # Range (haut - bas) / prix >= 0.4%
+    "m15_max_range_pct": 1.6,   # Plafond anti-krach M15 : ignore les fenêtres M15 > 1.6% où le SL fixe de 1.667% se fait balayer
+    "sl_cooldown_hours": 2.0,   # Pause (en heures) sur l'instrument après un Stop Loss (-50% ROI)
+    "block_same_poi": 1,        # 1 = interdit de reprendre un POI déjà invalidé par un SL (< 0.15% d'écart)
+    "same_poi_tol_pct": 0.15,   # Tolérance d'identité du POI invalidé (0.15%)
     "poi_fib": 0.5,             # Retracement 50% (équilibre SMC)
     "mkt_tol_pct": 0.05,        # Entrée au marché si prix <= POI * 1.0005 (0.05%)
     "lim_offset_pct": 0.1,      # Ordre limite à POI * 0.999 (long) / POI * 1.001 (short)
     "reprice_tol_pct": 0.1,     # Remplace l'ordre au repos si écart > 0.1%
     "trail_mode": "check_30m",  # "check_30m" (vérifié au run 30m comme Cubrik) | "intra" (continu sur bougie 5m)
-    "fee_pct": 0.02,            # Frais futures par ordre en % du notionnel (0.02% maker/taker moyen MoonX/Binance Futures, 0 = brut)
+    "fee_pct": 0.02,            # Frais futures par ordre en % du notionnel (0.02% maker/taker moyen MoonX/Binance Futures)
 }
 
 TRAIL_TIERS = (
@@ -102,33 +96,41 @@ def _roi_at_price(side: int, entry: float, price: float, leverage: float) -> flo
     return float(leverage * move * 100.0)
 
 
-def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None, i0=0, i1=None):
+def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i0=0, i1=None):
     """
     Exécute le backtest CRYPTO V4 sur `pd_` dans l'intervalle de bougies 5m `[i0, i1)`.
     Retourne `(trades_df, equity_array_on_slice)`.
     """
     p = dict(PARAMS if p is None else p)
-    margin_usdt = float(p.get("margin_usdt", 200.0))
     lev = float(p.get("leverage", 30.0))
     tp_roi_pct = float(p.get("tp_roi_pct", 300.0))
     sl_roi_pct = float(p.get("sl_roi_pct", 50.0))
+    one_r_roi = sl_roi_pct if sl_roi_pct > 0 else 50.0
+
+    # Si risk_pct > 0, la marge par trade est calibrée pour qu'un SL (-50% ROI) = risk_pct% du capital initial
+    if risk_pct is not None and float(risk_pct) > 0:
+        one_r_usdt = float(capital) * (float(risk_pct) / 100.0)
+        margin_usdt = one_r_usdt / (one_r_roi / 100.0)
+    else:
+        margin_usdt = float(p.get("margin_usdt", 200.0))
+        one_r_usdt = margin_usdt * (one_r_roi / 100.0)
+
     h4_lb = int(p.get("h4_lookback", 8))
     h4_thresh = float(p.get("h4_thresh", 0.35))
     m15_lb = int(p.get("m15_lookback", 16))
     m15_min_rng = float(p.get("m15_min_range_pct", 0.4)) / 100.0
+    m15_max_rng = float(p.get("m15_max_range_pct", 1.6)) / 100.0
+    cd_bars_5m = int(round(float(p.get("sl_cooldown_hours", 1.0)) * 12.0))
+    block_same_poi = int(float(p.get("block_same_poi", 1))) != 0
+    same_poi_tol = float(p.get("same_poi_tol_pct", 0.15)) / 100.0
     poi_fib = float(p.get("poi_fib", 0.5))
     mkt_tol = float(p.get("mkt_tol_pct", 0.05)) / 100.0
     lim_off = float(p.get("lim_offset_pct", 0.1)) / 100.0
     reprice_tol = float(p.get("reprice_tol_pct", 0.1)) / 100.0
     trail_mode = str(p.get("trail_mode", "check_30m")).lower()
 
-    # Frais en % du notionnel par ordre
     use_fee_pct = float(p.get("fee_pct", 0.02)) if fee_pct is None else float(fee_pct)
     fee = use_fee_pct / 100.0
-
-    # 1 R correspond au risque initial SL = -sl_roi_pct% de la marge (soit 50% * 200 = 100 USDT)
-    one_r_roi = sl_roi_pct if sl_roi_pct > 0 else 50.0
-    one_r_usdt = margin_usdt * (one_r_roi / 100.0)
 
     B = pd_.base
     o, h, l, c = B["o"], B["h"], B["l"], B["c"]
@@ -143,23 +145,23 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
     f4h = pd_.frames["4h"]
     h4, l4, c4, close_ns_4h = f4h["h"], f4h["l"], f4h["c"], f4h["close_ns"]
 
-    # Index de la dernière bougie 15m et 4h clôturée à ou avant la clôture de chaque bougie 5m
     j15_vec = np.searchsorted(close_ns_15, close_ns, side="right") - 1
     j4h_vec = np.searchsorted(close_ns_4h, close_ns, side="right") - 1
 
-    # Les checks de 30 minutes ont lieu lorsque close_ns est un multiple exact de 30 minutes (1800s)
     ns_30m = 30 * 60 * 10**9
     is_check_30m = (close_ns % ns_30m) == 0
 
-    pos = None    # dict de la position ouverte
-    order = None  # dict de l'ordre limite au repos
+    pos = None
+    order = None
     raw_trades = []
+    last_sl_idx = -999999
+    last_sl_poi = -1.0
 
     def close_position(pos_dict, exit_idx, exit_px, reason_str):
+        nonlocal last_sl_idx, last_sl_poi
         side = pos_dict["side"]
         en = pos_dict["entry"]
         roi_gross_pct = _roi_at_price(side, en, exit_px, lev)
-        # Frais aller-retour exprimés en % de la marge : 2 * fee * lev * 100
         roi_fee_pct = 2.0 * fee * lev * 100.0
         roi_net_pct = roi_gross_pct - roi_fee_pct
 
@@ -167,6 +169,10 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
         r_net = roi_net_pct / one_r_roi
         pnl_usdt = margin_usdt * (roi_net_pct / 100.0)
         pnl_gross_usdt = margin_usdt * (roi_gross_pct / 100.0)
+
+        if r_gross < -0.1:
+            last_sl_idx = exit_idx
+            last_sl_poi = float(pos_dict["poi"])
 
         fill_i = pos_dict["fill_i"]
         sig_i = pos_dict["sig_i"]
@@ -265,7 +271,6 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
                     "entry_type": "LIMIT",
                 }
                 order = None
-                # Vérifie si la même bougie 5m a aussi touché le SL initial
                 if (side == 1 and lk <= init_sl) or (side == -1 and hk >= init_sl):
                     close_position(pos, k, init_sl, "SL (-50%)")
                     pos = None
@@ -293,9 +298,12 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
             for tier_idx, (trig_roi, lock_roi) in enumerate(TRAIL_TIERS, 1):
                 if roi_cur >= trig_roi and tier_idx > pos["tier"]:
                     pos["tier"] = tier_idx
-                    new_sl = _price_at_roi(side, en, lock_roi, lev)
-                    # Si le prix actuel a déjà franchi ce nouveau SL (impossible normalement car roi_cur >= trig_roi > lock_roi)
-                    pos["sl"] = new_sl
+                    pos["sl"] = _price_at_roi(side, en, lock_roi, lev)
+            continue
+
+        # --- Filtre Cooldown après un SL ---
+        if cd_bars_5m > 0 and (k - last_sl_idx) < cd_bars_5m:
+            order = None
             continue
 
         # --- Étape 3 : Détection & Ré-analyse (instruments sans position ouverte) ---
@@ -306,7 +314,7 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
         rng_h4 = float(np.max(h4[s4_0:s4_1]) - np.min(l4[s4_0:s4_1]))
         biais_h4 = (net_h4 / rng_h4) if rng_h4 > 0 else 0.0
 
-        # 3.2 Fenêtre M15 : range (haut - bas) / prix >= 0.4 % sur les 16 dernières clôtures 15m
+        # 3.2 Fenêtre M15 : 0.4 % <= range (haut - bas) / prix <= m15_max_range_pct sur les 16 dernières clôtures 15m
         s15_0 = j15 - m15_lb + 1
         s15_1 = j15 + 1
         w15_h = h15[s15_0:s15_1]
@@ -314,9 +322,9 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
         win_hi = float(np.max(w15_h))
         win_lo = float(np.min(w15_l))
         rng_m15 = win_hi - win_lo
+        rng_m15_ratio = rng_m15 / px
 
-        if (rng_m15 / px) < m15_min_rng:
-            # Fenêtre M15 trop étroite (< 0.4%) : annuler tout ordre au repos et sauter
+        if rng_m15_ratio < m15_min_rng or (m15_max_rng > 0 and rng_m15_ratio > m15_max_rng):
             order = None
             continue
 
@@ -339,19 +347,20 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
             order = None
             continue
 
-        # 3.4 Calcul du POI et validation du Côté
+        # 3.4 Calcul du POI et validation du Côté + Filtre anti-répétition du même POI cassé
         if direction == 1:
-            # long = after_hi - 0.5 * (after_hi - win_lo)
             i_lo = int(np.argmin(w15_l))
             after_hi = float(np.max(w15_h[i_lo:]))
             poi = after_hi - poi_fib * (after_hi - win_lo)
 
-            # Côté : un long exige POI < prix. Sinon, sauter (et annuler l'ordre mort).
+            if block_same_poi and last_sl_poi > 0 and abs(poi - last_sl_poi) / last_sl_poi < same_poi_tol:
+                order = None
+                continue
+
             if not (poi < px):
                 order = None
                 continue
 
-            # Type d'entrée : au marché si prix <= POI * 1.0005, sinon limite à POI * 0.999
             if px <= poi * (1.0 + mkt_tol):
                 order = None
                 en = float(px)
@@ -375,17 +384,18 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
                     order = {"side": 1, "limit": new_lim, "poi": poi, "sig_i": k}
 
         else:
-            # short = after_lo + 0.5 * (win_hi - after_lo)
             i_hi = int(np.argmax(w15_h))
             after_lo = float(np.min(w15_l[i_hi:]))
             poi = after_lo + poi_fib * (win_hi - after_lo)
 
-            # Côté : un short exige POI > prix. Sinon, sauter (et annuler l'ordre mort).
+            if block_same_poi and last_sl_poi > 0 and abs(poi - last_sl_poi) / last_sl_poi < same_poi_tol:
+                order = None
+                continue
+
             if not (poi > px):
                 order = None
                 continue
 
-            # Type d'entrée : au marché si prix >= POI * 0.9995, sinon limite à POI * 1.001
             if px >= poi * (1.0 - mkt_tol):
                 order = None
                 en = float(px)
@@ -408,7 +418,7 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
                 if order is None or order["side"] != -1 or abs(new_lim - order["limit"]) / order["limit"] > reprice_tol:
                     order = {"side": -1, "limit": new_lim, "poi": poi, "sig_i": k}
 
-    # 3) Courbe d'équité (en mode marge fixe 200 USDT : 1R = 100 USDT, ou % du capital)
+    # 3) Courbe d'équité
     eq = np.full(n, float(capital), dtype=np.float64)
     bal = float(capital)
     eqpos = 0
@@ -419,8 +429,7 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
         if fi > eqpos:
             eq[eqpos:fi] = bal
             eqpos = fi
-        # PnL en USDT (marge fixe 200 USDT, 1R = 100 USDT)
-        pnl_cash = float(t["pnl_usdt"]) if risk_pct <= 0 else float(t["r"] * one_r_usdt)
+        pnl_cash = float(t["pnl_usdt"])
         t["pnl"] = pnl_cash
         if xi >= eqpos:
             eq[eqpos:xi] = bal
@@ -439,21 +448,9 @@ def run(pd_, capital=10000.0, risk_pct=1.0, fee_pct=None, leverage=30.0, p=None,
     return pd.DataFrame(raw_trades), eq[i0:i1]
 
 
-def compute_period_table(trades_df: pd.DataFrame, period: str = "M", start_capital: float = 1800.0, one_r_usdt: float = 100.0) -> pd.DataFrame:
+def compute_period_table(trades_df: pd.DataFrame, period: str = "M", start_capital: float = 600.0, one_r_usdt: float = 9.0) -> pd.DataFrame:
     """
-    Calcule le tableau détaillé par Mois (`period="M"`) ou par Année (`period="Y"`) :
-      - `period`       : 'YYYY-MM' ou 'YYYY'
-      - `trades`       : nombre de trades clôturés sur la période
-      - `win_pct`      : % de trades gagnants (r > 0)
-      - `be_pct`       : % de trades à Break-Even
-      - `avg_r`        : RR moyen par trade sur la période
-      - `sum_r`        : Gain net cumulé en R sur la période
-      - `pnl_usdt`     : Gain net en USDT (base 200 USDT de marge/position, 1R = 100 USDT)
-      - `roi_margin_pct`: Gain cumulé en % de la marge de 200 USDT (`sum_r * 50%`)
-      - `return_pct`   : Gain en % du portefeuille (`pnl_usdt / start_capital * 100`)
-      - `max_dd_r`     : Drawdown max intra-période en R
-      - `max_dd_usdt`  : Drawdown max intra-période en USDT
-      - `max_dd_pct`   : Drawdown max intra-période en % du capital de début de période
+    Calcule le tableau détaillé par Mois (`period="M"`) ou par Année (`period="Y"`).
     """
     cols = [
         "period", "trades", "wins", "be", "losses", "win_pct",
@@ -488,7 +485,6 @@ def compute_period_table(trades_df: pd.DataFrame, period: str = "M", start_capit
         pnl_usdt = float(pnl_arr.sum())
         roi_margin_pct = float(sum_r * 50.0)
 
-        # Courbe intra-période pour le drawdown du mois / de l'année
         base_cap = max(running_cap, start_capital)
         eq_r = np.concatenate([[0.0], np.cumsum(r_arr)])
         peak_r = np.maximum.accumulate(eq_r)
@@ -524,19 +520,28 @@ def compute_period_table(trades_df: pd.DataFrame, period: str = "M", start_capit
     return pd.DataFrame(rows, columns=cols)
 
 
-def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start_capital: float = 1800.0, p: dict = None) -> str:
+def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start_capital: float = 600.0, risk_pct: float = 1.5, p: dict = None) -> str:
     """
     Formate le rapport complet CRYPTO V4 (Bilan par crypto, Bilan Annuel, Bilan Mensuel avec Drawdown, Gains/RR et RR moyen).
     """
     p = dict(PARAMS if p is None else p)
-    margin_usdt = float(p.get("margin_usdt", 200.0))
     lev = float(p.get("leverage", 30.0))
-    one_r_usdt = margin_usdt * (float(p.get("sl_roi_pct", 50.0)) / 100.0)
+    sl_roi = float(p.get("sl_roi_pct", 50.0))
+    if risk_pct is not None and float(risk_pct) > 0:
+        one_r_usdt = float(start_capital) * (float(risk_pct) / 100.0)
+        margin_usdt = one_r_usdt / (sl_roi / 100.0)
+        sizing_desc = f"Risque {risk_pct:g}% du capital ({one_r_usdt:.1f} USDT / SL) -> Marge {margin_usdt:.1f} USDT/trade à levier x{lev:g}"
+    else:
+        margin_usdt = float(p.get("margin_usdt", 200.0))
+        one_r_usdt = margin_usdt * (sl_roi / 100.0)
+        sizing_desc = f"Marge fixe {margin_usdt:.0f} USDT/trade | Levier x{lev:g} isolé | 1R = -50% ROI ({one_r_usdt:.0f} USDT)"
 
     lines = [
-        "⚡ CRYPTO V4 (A2-R — Stratégie SMC — Crypto Futures)",
-        f"Sizing : Marge fixe {margin_usdt:.0f} USDT/trade | Levier x{lev:g} isolé (notionnel {margin_usdt * lev:,.0f} USDT) | 1R = -50% ROI ({one_r_usdt:.0f} USDT) | TP = +300% ROI (+6R)",
-        f"Capital de référence portefeuille (9 cryptos x {margin_usdt:.0f} USDT) : {start_capital:,.0f} USDT",
+        "⚡ CRYPTO V4 OPTIMISÉE (A2-R — Stratégie SMC — Crypto Futures)",
+        f"Sizing : {sizing_desc} | TP = +300% ROI (+6R)",
+        f"Filtres actifs : Range M15 [{p.get('m15_min_range_pct', 0.4)}% .. {p.get('m15_max_range_pct', 1.6)}%] | "
+        f"Cooldown après SL : {p.get('sl_cooldown_hours', 1.0)}h | Anti-répétition POI : {'OUI' if int(float(p.get('block_same_poi', 1))) else 'NON'}",
+        f"Capital de départ : {start_capital:,.0f} USDT",
         "",
         "📊 1. BILAN PAR CRYPTO (toute la période) :",
     ]
@@ -552,7 +557,6 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
         lines.append("\n⚠️ Aucun trade généré.")
         return "\n".join(lines)
 
-    # Statistiques globales portefeuille
     df = all_trades.copy()
     df["_sort_ts"] = pd.to_datetime(df["exit_time"], utc=True)
     df = df.sort_values("_sort_ts").reset_index(drop=True)
@@ -574,7 +578,6 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
     dd_u = float((eq_u - peak_u).min())
     dd_pct = float(((eq_u - peak_u) / np.maximum(peak_u, 1.0)).min() * 100.0)
 
-    # Répartition par motif de clôture
     reason_counts = df["reason"].value_counts().to_dict() if "reason" in df.columns else {}
     r_parts = [f"{k}: {v}" for k, v in reason_counts.items()]
 
@@ -583,12 +586,11 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
         "🌍 2. BILAN GLOBAL PORTEFEUILLE (toutes cryptos combinées) :",
         f"  • Total trades : {tot_t} | Gagnants : {wins} ({wins/tot_t*100:.1f}%) | Break-Even : {be} ({be/tot_t*100:.1f}%) | Perdants : {losses} ({losses/tot_t*100:.1f}%)",
         f"  • RR moyen global : {avg_r:+.3f} R / trade ({avg_r * 50.0:+.2f}% ROI marge / trade)",
-        f"  • Gain net total  : {sum_r:+.1f} R | {tot_usdt:+,.0f} USDT ({tot_usdt/start_capital*100:+.1f}% sur capital {start_capital:,.0f} USDT)",
+        f"  • Gain net total  : {sum_r:+.1f} R | {tot_usdt:+,.0f} USDT ({tot_usdt/start_capital*100:+.1f}% sur capital {start_capital:,.0f} USDT -> Capital final {start_capital + tot_usdt:,.0f} USDT)",
         f"  • Drawdown max    : {dd_r:.1f} R | {dd_u:+,.0f} USDT ({dd_pct:.1f}%)",
         f"  • Clôtures        : {' | '.join(r_parts)}",
     ])
 
-    # Tableau annuel
     yr_df = compute_period_table(df, period="Y", start_capital=start_capital, one_r_usdt=one_r_usdt)
     lines.extend([
         "",
@@ -603,7 +605,6 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
             f"{row['max_dd_usdt']:+8.0f}$ ({row['max_dd_pct']:5.1f}%)"
         )
 
-    # Tableau mensuel
     mo_df = compute_period_table(df, period="M", start_capital=start_capital, one_r_usdt=one_r_usdt)
     lines.extend([
         "",
@@ -619,4 +620,3 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
         )
 
     return "\n".join(lines)
-
