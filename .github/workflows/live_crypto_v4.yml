@@ -12,8 +12,13 @@ on:
         description: "Cryptos actives (les 4 rentables validées par défaut)"
         default: "BTC,ETH,AVAX,INJ"
       risk_pct:
-        description: "Risque par trade en % du capital MoonX à l'instant t (ex: 1.5 = 1.5% du solde par SL)"
+        description: "Risque par trade en % du capital réalisé MoonX à l'instant t (ex: 1.5 = 1.5% du solde par SL)"
         default: "1.5"
+      margin_mode:
+        description: "Mode de marge MoonX (cross = croisé, isolated = isolé)"
+        type: choice
+        default: "cross"
+        options: ["cross", "isolated"]
       params:
         description: "Réglages supplémentaires (ex: m15_max_range_pct=1.6;sl_cooldown_hours=2.0;block_same_poi=1)"
         default: ""
@@ -52,11 +57,13 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || 'non' }}
           SYMBOLS: ${{ inputs.symbols || 'BTC,ETH,AVAX,INJ' }}
           RISK_PCT: ${{ inputs.risk_pct || '1.5' }}
+          MARGIN_MODE: ${{ inputs.margin_mode || 'cross' }}
           EXTRA_PARAMS: ${{ inputs.params || '' }}
         run: |
           python backtest/live_crypto_v4_moonx.py \
             --symbols "$SYMBOLS" \
             --risk_pct "$RISK_PCT" \
+            --margin_mode "$MARGIN_MODE" \
             --dry_run "$DRY_RUN" \
             --params "$EXTRA_PARAMS" \
             --state_file data/live_crypto_v4_state.json

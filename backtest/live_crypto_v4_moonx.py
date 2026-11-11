@@ -245,17 +245,56 @@ class MoonXMCPClient:
         # Si aucun mapping n'a matché (schéma dynamique), passer les clés canoniques
         if not mapped:
             mapped = {k: v for k, v in canonical_args.items() if v is not None}
+        else:
+            # Si le schéma de MoonX prend déjà la marge (margin / marginUsdt / amount) et que quantity n'est pas dans required,
+            # éviter d'envoyer à la fois margin et quantity pour ne pas créer de conflit de taille.
+            req_fields = set(schema.get("required", []) if isinstance(schema, dict) else [])
+            margin_keys = {"margin", "marginUsdt", "margin_usdt", "amount", "collateral", "marginAmount", "sizeUsdt"}
+            qty_keys = {"quantity", "qty", "size", "amountCoins", "contracts"}
+            has_margin_key = any(mk in mapped for mk in margin_keys)
+            for qk in list(qty_keys):
+                if has_margin_key and qk in mapped and qk not in req_fields:
+                    mapped.pop(qk, None)
 
         return self.call_tool(tool_name, mapped)
+
+
+def _to_float(val, default: float = -999999.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        s = val.strip().upper()
+        for tok in ("USDT", "USDC", "USD", "$", "€", "%", ","):
+            s = s.replace(tok, "")
+        s = s.strip()
+        if not s:
+            return default
+        try:
+            return float(s)
+        except ValueError:
+            return default
+    return default
 
 
 def _extract_list(obj) -> list:
     if isinstance(obj, list):
         return obj
     if isinstance(obj, dict):
-        for k in ("positions", "orders", "tpSlOrders", "tp_sl_orders", "trades", "history", "data", "items", "result", "rows"):
+        for k in (
+            "positions", "orders", "tpSlOrders", "tp_sl_orders", "tpslOrders",
+            "trades", "history", "wallets", "accounts", "balances", "assets",
+            "data", "items", "result", "rows", "list",
+        ):
             if k in obj and isinstance(obj[k], list):
                 return obj[k]
+        # Si un sous-dictionnaire contient la liste (ex: {"data": {"positions": [...]}})
+        for v in obj.values():
+            if isinstance(v, dict):
+                sub = _extract_list(v)
+                if sub:
+                    return sub
     return []
 
 
@@ -267,70 +306,152 @@ def _norm_base_coin(sym: str) -> str:
     return s
 
 
-def _parse_float(d: dict, keys: tuple, default: float = 0.0) -> float:
+def _parse_float(d, keys: tuple, default: float = 0.0) -> float:
+    if isinstance(d, list):
+        # Prioriser les entrées futures / usdt si c'est une liste de wallets
+        sorted_items = sorted(
+            [x for x in d if isinstance(x, dict)],
+            key=lambda x: 0 if any(w in json.dumps(x).lower() for w in ("future", "perp", "contract", "usdt")) else 1,
+        )
+        for item in sorted_items:
+            res = _parse_float(item, keys, default=-999999.0)
+            if res != -999999.0:
+                return res
+        return default
+
     if not isinstance(d, dict):
         return default
+
     for k in keys:
         if k in d and d[k] is not None:
-            try:
-                return float(d[k])
-            except (ValueError, TypeError):
-                pass
-    # Recherche insensible à la casse ou dans les sous-dictionnaires (ex: futures, wallet, account)
-    lower_d = {str(k).lower(): v for k, v in d.items()}
+            v = _to_float(d[k], default=-999999.0)
+            if v != -999999.0:
+                return v
+
+    lower_d = {str(k).lower().replace("_", ""): v for k, v in d.items()}
     for k in keys:
-        if k.lower() in lower_d and lower_d[k.lower()] is not None:
-            try:
-                return float(lower_d[k.lower()])
-            except (ValueError, TypeError):
-                pass
-    for sub_v in d.values():
-        if isinstance(sub_v, dict):
+        nk = k.lower().replace("_", "")
+        if nk in lower_d and lower_d[nk] is not None:
+            v = _to_float(lower_d[nk], default=-999999.0)
+            if v != -999999.0:
+                return v
+
+    # Prioriser les sous-dictionnaires "futures" / "account" / "wallet" / "usdt"
+    sub_items = list(d.items())
+    sub_items.sort(
+        key=lambda kv: 0 if any(w in str(kv[0]).lower() for w in ("future", "perp", "contract", "usdt", "wallet", "account", "margin")) else 1
+    )
+    for _, sub_v in sub_items:
+        if isinstance(sub_v, (dict, list)):
             res = _parse_float(sub_v, keys, default=-999999.0)
             if res != -999999.0:
                 return res
     return default
 
 
-def parse_account_balance(overview: dict, fallback_capital: float = 600.0) -> tuple[float, float]:
+def parse_account_balance(
+    overview,
+    positions_list: list = None,
+    orders_list: list = None,
+    fallback_capital: float = 495.0,
+) -> tuple[float, float, float]:
     """
-    Extrait `(total_equity_usdt, free_margin_usdt)` depuis `get_account_overview`.
+    Extrait `(realized_capital_usdt, free_margin_usdt, used_margin_usdt)` depuis `get_account_overview`.
+    Le `realized_capital_usdt` correspond au capital du compte AVANT le PnL latent des positions en cours
+    (ex: 495 USDT = 385 USDT disponible + 110 USDT de marge engagée, et non 540 USDT d'equity flottante).
     """
-    if not isinstance(overview, dict):
-        return fallback_capital, fallback_capital
+    import re
 
-    total_eq = _parse_float(
+    wallet_bal = _parse_float(
         overview,
         (
-            "totalEquity", "equity", "totalBalance", "futuresEquity", "futuresBalance",
-            "walletBalance", "balance", "totalMarginBalance", "netAssetValue", "nav", "totalUsdt",
+            "walletBalance", "futuresBalance", "accountBalance", "cashBalance",
+            "realizedBalance", "balance", "totalWalletBalance", "usdtBalance", "totalBalance",
         ),
         default=0.0,
     )
     free_m = _parse_float(
         overview,
         (
-            "freeMargin", "availableMargin", "availableBalance", "freeBalance",
-            "available", "free", "transferable", "withdrawable",
+            "availableBalance", "availableMargin", "freeMargin", "freeBalance",
+            "available", "free", "transferable", "withdrawable", "canUse", "availableUsdt",
         ),
         default=0.0,
     )
     used_m = _parse_float(
         overview,
-        ("usedMargin", "lockedMargin", "positionMargin", "orderMargin", "initialMargin", "blockedMargin"),
+        (
+            "usedMargin", "lockedMargin", "positionMargin", "orderMargin",
+            "initialMargin", "blockedMargin", "occupiedMargin", "isolatedMargin",
+            "frozenMargin", "frozenBalance", "frozen", "locked", "marginUsed",
+        ),
         default=0.0,
     )
+    total_eq = _parse_float(
+        overview,
+        ("totalEquity", "equity", "futuresEquity", "totalMarginBalance", "netAssetValue", "nav", "totalUsdt"),
+        default=0.0,
+    )
+    un_pnl = _parse_float(
+        overview,
+        ("unrealizedPnl", "unRealizedProfit", "unrealizedProfit", "upl", "floatingPnl", "openPnl", "CrossUnPnl"),
+        default=-999999.0,
+    )
 
-    if total_eq <= 0 and (free_m > 0 or used_m > 0):
-        total_eq = free_m + used_m
-    if free_m <= 0 and total_eq > 0:
-        free_m = max(0.0, total_eq - used_m)
-    if total_eq <= 0:
-        total_eq = fallback_capital
+    # Si get_account_overview a renvoyé du texte formaté (raw_text), extraire par regex
+    if isinstance(overview, dict) and "raw_text" in overview and wallet_bal <= 0 and free_m <= 0:
+        txt = str(overview["raw_text"])
+        m_bal = re.search(r"(?:wallet\s*balance|balance|solde|capital)\s*[:=]\s*\$?([0-9]+(?:\.[0-9]+)?)", txt, re.I)
+        m_av = re.search(r"(?:available|free|disponible|libre)\s*(?:margin|balance)?\s*[:=]\s*\$?([0-9]+(?:\.[0-9]+)?)", txt, re.I)
+        m_lk = re.search(r"(?:used|locked|position|blocked|occupied)\s*(?:margin|balance)?\s*[:=]\s*\$?([0-9]+(?:\.[0-9]+)?)", txt, re.I)
+        if m_bal:
+            wallet_bal = float(m_bal.group(1))
+        if m_av:
+            free_m = float(m_av.group(1))
+        if m_lk:
+            used_m = float(m_lk.group(1))
+
+    # Si used_m n'est pas fourni dans overview, additionner la marge engagée dans les positions et ordres ouverts
+    if used_m <= 0:
+        pos_margin_sum = 0.0
+        for p_it in (positions_list or []):
+            if isinstance(p_it, dict):
+                m_val = _parse_float(
+                    p_it,
+                    ("margin", "initialMargin", "isolatedMargin", "positionMargin", "usedMargin", "collateral", "marginUsdt"),
+                    default=0.0,
+                )
+                if m_val > 0:
+                    pos_margin_sum += m_val
+        for o_it in (orders_list or []):
+            if isinstance(o_it, dict):
+                m_val = _parse_float(o_it, ("margin", "initialMargin", "orderMargin", "lockedMargin", "marginUsdt"), default=0.0)
+                if m_val > 0:
+                    pos_margin_sum += m_val
+        if pos_margin_sum > 0:
+            used_m = pos_margin_sum
+
+    # Calculer le capital réalisé (ex: 495 USDT = 385 dispo + 110 marge engagée, hors PnL latent)
+    realized_cap = 0.0
+    if wallet_bal > 0:
+        realized_cap = wallet_bal
+    elif free_m > 0 and used_m > 0:
+        realized_cap = free_m + used_m
+    elif total_eq > 0 and un_pnl != -999999.0:
+        realized_cap = total_eq - un_pnl
+    elif total_eq > 0:
+        realized_cap = total_eq
+    elif free_m > 0:
+        realized_cap = free_m
+
+    if free_m <= 0 and realized_cap > 0:
+        free_m = max(0.0, realized_cap - used_m)
+    if realized_cap <= 0:
+        realized_cap = fallback_capital
     if free_m <= 0:
-        free_m = total_eq
+        free_m = realized_cap
 
-    return float(total_eq), float(free_m)
+    return float(realized_cap), float(free_m), float(used_m)
 
 
 def load_bot_state(path: str) -> dict:
@@ -400,8 +521,9 @@ def find_cancel_tool(client: MoonXMCPClient) -> str:
 def main():
     ap = argparse.ArgumentParser(description="Bot Live CRYPTO V4 Optimisée sur MoonX (MCP)")
     ap.add_argument("--symbols", default=",".join(scv4.CRYPTO_V4_SYMBOLS), help="Cryptos actives (défaut: BTC,ETH,AVAX,INJ)")
-    ap.add_argument("--risk_pct", type=float, default=1.5, help="Risque par SL en %% du capital à l'instant t (défaut: 1.5%%)")
-    ap.add_argument("--fallback_capital", type=float, default=600.0, help="Capital de secours si non lisible (défaut: 600 USDT)")
+    ap.add_argument("--risk_pct", type=float, default=1.5, help="Risque par SL en %% du capital réalisé à l'instant t (défaut: 1.5%%)")
+    ap.add_argument("--margin_mode", default="cross", choices=["cross", "isolated"], help="Mode de marge MoonX : cross (croisé) ou isolated (isolé)")
+    ap.add_argument("--fallback_capital", type=float, default=495.0, help="Capital de secours si non lisible (défaut: 495 USDT)")
     ap.add_argument("--params", default="", help="Réglages supplémentaires k=v;k2=v2")
     ap.add_argument("--dry_run", default="non", choices=["oui", "non"], help="oui = mode test sans envoyer d'ordres réels")
     ap.add_argument("--inspect_tools", action="store_true", help="Affiche les schémas exacts des outils MoonX MCP et quitte")
@@ -409,6 +531,7 @@ def main():
     a = ap.parse_args()
 
     is_dry = (a.dry_run.lower() == "oui")
+    margin_mode = a.margin_mode.lower()
     p = scv4.parse_params(a.params)
     lev = float(p.get("leverage", 30.0))
     tp_roi_pct = float(p.get("tp_roi_pct", 300.0))
@@ -442,9 +565,21 @@ def main():
     tpsl_raw = client.call_tool("list_futures_tp_sl_orders", {})
     history_raw = client.call_tool("get_futures_trade_history", {})
 
-    total_eq, free_margin = parse_account_balance(overview, fallback_capital=a.fallback_capital)
-    # Sizing dynamique à l'instant t (JAMAIS bridé à 18 USDT) :
-    # 1R = Solde_t * (risk_pct / 100) ; Marge isolée à x30 (SL = -50% ROI) = 1R / 0.50 = 2 * 1R
+    print(f"[MoonX Overview brut] {json.dumps(overview, ensure_ascii=False)}", flush=True)
+
+    positions_list = _extract_list(positions_raw)
+    orders_list = _extract_list(orders_raw)
+    tpsl_list = _extract_list(tpsl_raw)
+    history_list = _extract_list(history_raw)
+
+    total_eq, free_margin, used_margin = parse_account_balance(
+        overview,
+        positions_list=positions_list,
+        orders_list=orders_list,
+        fallback_capital=a.fallback_capital,
+    )
+    # Sizing dynamique sur le capital réalisé du compte (hors PnL latent, ex: 495 USDT = 385 dispo + 110 engagé) :
+    # 1R = Capital_réalisé_t * (risk_pct / 100) ; Marge à x30 (SL = -50% ROI) = 1R / 0.50 = 2 * 1R
     if a.risk_pct > 0:
         one_r_usdt = total_eq * (float(a.risk_pct) / 100.0)
         trade_margin_usdt = round(one_r_usdt / (sl_roi_pct / 100.0), 2)
@@ -453,15 +588,10 @@ def main():
         one_r_usdt = trade_margin_usdt * (sl_roi_pct / 100.0)
 
     print(
-        f"[{now_str}] Solde MoonX à l'instant t : {total_eq:.2f} USDT (Marge libre : {free_margin:.2f} USDT) "
-        f"-> 1R ({a.risk_pct:g}%) = {one_r_usdt:.2f} USDT | Marge/trade = {trade_margin_usdt:.2f} USDT (x{lev:g} isolé)",
+        f"[{now_str}] Capital réalisé MoonX : {total_eq:.2f} USDT (Dispo : {free_margin:.2f} USDT | Engagé : {used_margin:.2f} USDT) "
+        f"-> 1R ({a.risk_pct:g}%) = {one_r_usdt:.2f} USDT | Marge/trade = {trade_margin_usdt:.2f} USDT (x{lev:g} {margin_mode})",
         flush=True,
     )
-
-    positions_list = _extract_list(positions_raw)
-    orders_list = _extract_list(orders_raw)
-    tpsl_list = _extract_list(tpsl_raw)
-    history_list = _extract_list(history_raw)
 
     # Indexer par coin (BTC, ETH, AVAX, INJ)
     open_pos_by_coin = {}
@@ -715,7 +845,7 @@ def main():
                         "margin": trade_margin_usdt,
                         "quantity": qty_coins,
                         "leverage": int(lev),
-                        "marginMode": "isolated",
+                        "marginMode": margin_mode,
                         "takeProfitGainPercent": tp_roi_pct,
                         "stopLossLossPercent": sl_roi_pct,
                         "takeProfitPrice": tp_px,
@@ -759,7 +889,7 @@ def main():
                         "margin": trade_margin_usdt,
                         "quantity": qty_coins,
                         "leverage": int(lev),
-                        "marginMode": "isolated",
+                        "marginMode": margin_mode,
                         "takeProfitGainPercent": tp_roi_pct,
                         "stopLossLossPercent": sl_roi_pct,
                         "takeProfitPrice": tp_px,
@@ -772,8 +902,8 @@ def main():
 
     summary = (
         f"🤖 Run Live CRYPTO V4 ({now_str}){' [DRY-RUN]' if is_dry else ''}\n"
-        f"• Solde MoonX : {total_eq:.2f} USDT (Libre : {free_margin:.2f} USDT)\n"
-        f"• Sizing dynamique ({a.risk_pct:g}%) : 1R = {one_r_usdt:.2f} USDT | Marge = {trade_margin_usdt:.2f} USDT (x{lev:g})\n"
+        f"• Capital réalisé MoonX : {total_eq:.2f} USDT (Dispo : {free_margin:.2f} USDT | Engagé : {used_margin:.2f} USDT)\n"
+        f"• Sizing dynamique ({a.risk_pct:g}%) : 1R = {one_r_usdt:.2f} USDT | Marge = {trade_margin_usdt:.2f} USDT (x{lev:g} {margin_mode})\n"
         + ("\n".join(actions_log) if actions_log else "• Aucune nouvelle action sur ce créneau 30m.")
     )
     print("\n" + summary, flush=True)
