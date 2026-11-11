@@ -382,6 +382,21 @@ def parse_account_balance(
     """
     import re
 
+    # Cas 1 : Structure officielle MoonX Unified Balance (ex: unifiedBalance.total = 495.2226, availableFor.futures = 395.2226, LOCKED_MARGIN = 100)
+    if isinstance(overview, dict) and isinstance(overview.get("unifiedBalance"), dict):
+        ub = overview["unifiedBalance"]
+        fb = overview.get("futuresBalances", {}) if isinstance(overview.get("futuresBalances"), dict) else {}
+        av_for = ub.get("availableFor", {}) if isinstance(ub.get("availableFor"), dict) else {}
+        u_tot = _to_float(ub.get("total"), default=0.0)
+        u_free = _to_float(av_for.get("futures") or av_for.get("spot"), default=0.0)
+        u_lock = _to_float(fb.get("LOCKED_MARGIN") or fb.get("lockedMargin"), default=0.0)
+        if u_tot > 0:
+            if u_lock <= 0 and u_free > 0 and u_tot > u_free:
+                u_lock = u_tot - u_free
+            if u_free <= 0:
+                u_free = max(0.0, u_tot - max(0.0, u_lock))
+            return float(u_tot), float(u_free), float(max(0.0, u_lock))
+
     wallet_bal = _parse_float(
         overview,
         (
