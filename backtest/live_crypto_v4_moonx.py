@@ -586,6 +586,29 @@ def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     return r15, r4h, last_px
 
 
+_SL_KEYS = ("stopLossPrice", "slPrice", "stopLoss", "sl", "slTriggerPrice", "stopLossTriggerPrice", "stop_loss_price", "stop_loss")
+_TP_KEYS = ("takeProfitPrice", "tpPrice", "takeProfit", "tp", "tpTriggerPrice", "takeProfitTriggerPrice", "take_profit_price", "take_profit")
+
+
+def get_position_id(pos: dict):
+    """Retrouve l'identifiant d'une position MoonX quel que soit le nom du champ (positionId, id, posId, ...)."""
+    if not isinstance(pos, dict):
+        return None
+    for k in ("positionId", "position_id", "posId", "pos_id", "id", "_id", "positionID", "pid"):
+        v = pos.get(k)
+        if v not in (None, "", 0):
+            return str(v)
+    for k, v in pos.items():
+        if str(k).lower().endswith("id") and v not in (None, "", 0) and not isinstance(v, (dict, list, bool)):
+            if "order" in str(k).lower() or "user" in str(k).lower() or "account" in str(k).lower():
+                continue
+            return str(v)
+    for k, v in pos.items():
+        if str(k).lower().endswith("id") and v not in (None, "", 0) and not isinstance(v, (dict, list, bool)):
+            return str(v)
+    return None
+
+
 def apply_tp_sl(client: MoonXMCPClient, coin: str, pos_id, side_int: int, entry_px: float,
                 tp_px: float, sl_px: float, sl_roi_signed: float, tp_roi_pct: float, label: str) -> bool:
     """
@@ -606,6 +629,23 @@ def apply_tp_sl(client: MoonXMCPClient, coin: str, pos_id, side_int: int, entry_
         args["stopLossLossPercent"] = abs(sl_roi_signed)
 
     schema_props = (client.tools_schema.get("set_futures_tp_sl", {}) or {}).get("properties", {})
+    if not pos_id:
+        raw_pos = ""
+        try:
+            for it in _extract_list(client.call_tool("list_futures_positions", {})):
+                if isinstance(it, dict) and _norm_base_coin(it.get("symbol") or it.get("pair") or it.get("instrument") or it.get("asset")) == coin:
+                    pos_id = get_position_id(it)
+                    raw_pos = json.dumps(it, ensure_ascii=False)[:700]
+                    break
+        except Exception:
+            pass
+        if not pos_id:
+            tg_send(f"❌ {coin} {label} : positionId introuvable. Position brute MoonX : {raw_pos}\nVÉRIFIE MANUELLEMENT TON SL/TP !")
+            return False
+        args["positionId"] = str(pos_id)
+    else:
+        args["positionId"] = str(pos_id)
+
     price_ok = any(k.lower() in ("stoplossprice", "slprice", "stop_loss_price", "stoploss", "sl") for k in schema_props)
     if not price_ok and sl_roi_signed >= 0:
         # Schéma uniquement en pourcentages : on exprime le SL verrouillé en "perte négative"
@@ -830,9 +870,9 @@ def main():
             raw_side = str(pos.get("side") or pos.get("direction") or pos.get("positionSide") or "LONG").upper()
             side_int = 1 if ("LONG" in raw_side or "BUY" in raw_side) else -1
             entry_px = _parse_float(pos, ("entryPrice", "openPrice", "avgEntryPrice", "avgPrice", "price"), default=mkt_px)
-            cur_sl_px = _parse_float(pos, ("stopLossPrice", "slPrice", "stopLoss", "sl"), default=0.0)
-            cur_tp_px = _parse_float(pos, ("takeProfitPrice", "tpPrice", "takeProfit", "tp"), default=0.0)
-            pos_id = pos.get("positionId") or pos.get("id")
+            cur_sl_px = _parse_float(pos, _SL_KEYS, default=0.0)
+            cur_tp_px = _parse_float(pos, _TP_KEYS, default=0.0)
+            pos_id = get_position_id(pos)
 
             # Lire SL/TP actuels : classer chaque ordre TP/SL selon sa position vs prix d'entrée (jamais confondre SL et TP)
             for t_item in tpsl_by_coin.get(coin, []):
@@ -867,9 +907,18 @@ def main():
             if coin not in known_pos:
                 known_pos[coin] = {"entry": entry_px, "ts": now_ts}
                 nt = (f"📥 {coin} : position {side_lbl} détectée @ {entry_px:g} (ordre limite exécuté ou ouverture) | "
-                      f"SL actuel {cur_sl_px:g} | TP actuel {cur_tp_px:g}")
+                      f"SL actuel {cur_sl_px:g} | TP actuel {cur_tp_px:g} | positionId={pos_id}")
                 actions_log.append(nt)
                 tg_send(("[SIMULATION] " if is_dry else "") + nt)
+            if (cur_sl_px <= 0 or cur_tp_px <= 0 or not pos_id) and not state.setdefault("raw_dumped", {}).get(coin):
+                state["raw_dumped"][coin] = now_ts
+                tg_send(
+                    f"🔬 DEBUG {coin} champs bruts MoonX (à m'envoyer si SL/TP lu à 0) :\n"
+                    f"POSITION = {json.dumps(pos, ensure_ascii=False)[:900]}\n"
+                    f"TP/SL ORDERS = {json.dumps(tpsl_by_coin.get(coin, []), ensure_ascii=False)[:900]}"
+                )
+            if coin not in open_pos_by_coin:
+                state.get("raw_dumped", {}).pop(coin, None)
             has_tpsl = cur_sl_px > 0 and cur_tp_px > 0
             sl_misaligned = (
                 trail["tier"] == 0
