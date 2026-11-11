@@ -524,14 +524,30 @@ def save_bot_state(path: str, state: dict):
 
 def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     """
-    Télécharge les dernières bougies 5m (10 derniers jours), construit les bougies 15m et 4h *clôturées*,
-    et retourne `(df_15m, df_4h, last_price)`.
+    Télécharge en TEMPS RÉEL les dernières bougies 5m (jusqu'à la minute actuelle !) depuis les API live
+    (Hyperliquid, KuCoin, Bybit — et NON data.binance.vision qui s'arrête la veille à minuit),
+    construit les bougies 15m et 4h *clôturées*, et retourne `(df_15m, df_4h, last_price)`.
     """
     binance_sym = dc.ftmo_to_binance(f"{coin}USD")
-    start_dt = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
-    df_5m, _ = dc.load(binance_sym, "5m", start_dt, source="auto", use_cache=False)
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - (5 * 86400 * 1000)  # 5 derniers jours en temps réel
+
+    df_5m = None
+    # Essayer les sources TEMPS RÉEL (qui incluent les bougies d'aujourd'hui jusqu'à la minute en cours)
+    for live_fn in (dc.fetch_hyperliquid, dc.fetch_kucoin, dc.fetch_bybit_linear, dc.fetch_bybit):
+        try:
+            rows = live_fn(binance_sym, "5m", start_ms, now_ms)
+            if rows and len(rows) >= 120:
+                cand_df = dc._frame(rows)
+                age_min = (pd.Timestamp.now(tz="UTC") - cand_df["time"].iloc[-1]).total_seconds() / 60.0
+                if age_min <= 45.0:
+                    df_5m = cand_df
+                    break
+        except Exception:
+            continue
+
     if df_5m is None or len(df_5m) < 100:
-        raise RuntimeError(f"Données 5m insuffisantes pour {coin}")
+        raise RuntimeError(f"Données 5m temps réel indisponibles pour {coin}")
 
     df_5m = df_5m.sort_values("time").reset_index(drop=True)
     last_px = float(df_5m["close"].iloc[-1])
@@ -756,10 +772,18 @@ def main():
 
             trail = scv4.compute_live_trailing_sl(side_int, entry_px, mkt_px, current_sl=cur_sl_px, p=p)
 
-            # 2.a) Si la position vient d'être remplie (ex: ordre limite exécuté) et n'a pas encore de TP/SL : attacher TP +300% / SL -50%
+            # 2.a) Si la position n'a pas encore de TP/SL OU si son SL initial au palier 0 est décalé de > 0.15% par rapport au vrai prix d'entrée MoonX
             has_tpsl = (cur_sl_px > 0 and cur_tp_px > 0) or (coin in tpsl_by_coin and len(tpsl_by_coin[coin]) > 0)
-            if not has_tpsl and trail["tier"] == 0:
-                msg = f"🛡️ {coin} ({'LONG' if side_int==1 else 'SHORT'} @ {entry_px:g}) : Attache TP +300% ({trail['tp_price']:g}) & SL -50% ({trail['target_sl_price']:g})"
+            sl_misaligned = (
+                trail["tier"] == 0
+                and cur_sl_px > 0
+                and abs(cur_sl_px - trail["target_sl_price"]) / entry_px > 0.0015
+            )
+            if (not has_tpsl or sl_misaligned) and trail["tier"] == 0:
+                msg = (
+                    f"🛡️ {coin} ({'LONG' if side_int==1 else 'SHORT'} @ {entry_px:g}) : "
+                    f"Calibrage TP +300% ({trail['tp_price']:g}) & SL -50% ({trail['target_sl_price']:g} = -1R sur entrée réelle)"
+                )
                 print(msg, flush=True)
                 actions_log.append(msg)
                 if not is_dry:
@@ -881,13 +905,6 @@ def main():
         state["active_pois"] = active_pois
 
         if sig["action"] == "MARKET":
-            msg = (
-                f"🚀 {coin} : OUVERTURE MARCHÉ {side_str.upper()} @ ~{en_px:g} | "
-                f"Marge {trade_margin_usdt:.2f} USDT (1R={one_r_usdt:.2f} USDT, {a.risk_pct:g}% de {total_eq:.0f}$) | "
-                f"TP {tp_px:g} (+300%) | SL {sl_px:g} (-50%)"
-            )
-            print(msg, flush=True)
-            actions_log.append(msg)
             if not is_dry:
                 open_res = client.map_and_call(
                     "open_futures_position",
@@ -900,11 +917,26 @@ def main():
                         "marginMode": margin_mode,
                         "takeProfitGainPercent": tp_roi_pct,
                         "stopLossLossPercent": sl_roi_pct,
-                        "takeProfitPrice": tp_px,
-                        "stopLossPrice": sl_px,
                     },
                 )
                 new_pos_id = open_res.get("positionId") or open_res.get("id") if isinstance(open_res, dict) else None
+                real_en_px = _parse_float(open_res, ("entryPrice", "openPrice", "avgEntryPrice", "avgPrice", "price"), default=0.0) if isinstance(open_res, dict) else 0.0
+                if real_en_px <= 0:
+                    try:
+                        pos_after = _extract_list(client.call_tool("list_futures_positions", {}))
+                        for p_af in pos_after:
+                            if isinstance(p_af, dict) and _norm_base_coin(p_af.get("symbol") or p_af.get("pair") or p_af.get("instrument")) == coin:
+                                real_en_px = _parse_float(p_af, ("entryPrice", "openPrice", "avgEntryPrice", "avgPrice", "price"), default=0.0)
+                                if not new_pos_id:
+                                    new_pos_id = p_af.get("positionId") or p_af.get("id")
+                                break
+                    except Exception:
+                        pass
+                if real_en_px > 0:
+                    en_px = real_en_px
+                    s_int = 1 if side_str == "long" else -1
+                    sl_px = scv4._price_at_roi(s_int, en_px, -sl_roi_pct, lev)
+                    tp_px = scv4._price_at_roi(s_int, en_px, tp_roi_pct, lev)
                 try:
                     client.map_and_call(
                         "set_futures_tp_sl",
@@ -921,6 +953,14 @@ def main():
                 except Exception as te:
                     print(f"[{coin}] Note set_futures_tp_sl après ouverture : {te}", flush=True)
                 free_margin = max(0.0, free_margin - trade_margin_usdt)
+
+            msg = (
+                f"🚀 {coin} : OUVERTURE MARCHÉ {side_str.upper()} @ {en_px:g} | "
+                f"Marge {trade_margin_usdt:.2f} USDT (1R={one_r_usdt:.2f} USDT, {a.risk_pct:g}% de {total_eq:.0f}$) | "
+                f"TP {tp_px:g} (+300%) | SL {sl_px:g} (-50%)"
+            )
+            print(msg, flush=True)
+            actions_log.append(msg)
             tg_send(f"{'[SIMULATION] ' if is_dry else ''}{msg}")
 
         elif sig["action"] == "LIMIT":
