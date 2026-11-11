@@ -173,13 +173,14 @@ def main():
     ap.add_argument(
         "--symbols",
         default=",".join(scv4.CRYPTO_V4_SYMBOLS),
-        help="Cryptos à backtester (défaut: BTC,ETH,SOL,AVAX,INJ)",
+        help="Cryptos à backtester (défaut: BTC,ETH,AVAX,INJ)",
     )
     ap.add_argument("--datadir", default="data")
     ap.add_argument("--start", default="2022-01-01")
     ap.add_argument("--end", default="")
     ap.add_argument("--capital", type=float, default=600.0, help="Capital initial portefeuille USDT (défaut: 600 USDT)")
-    ap.add_argument("--risk_pct", type=float, default=1.5, help="Risque par trade en %% du capital (1.5 = 9 USDT/SL sur 600 USDT, soit 18 USDT de marge à x30 ; 0 = marge fixe margin_usdt)")
+    ap.add_argument("--risk_pct", type=float, default=1.5, help="Risque par trade en %% du capital à l'instant t (1.5 = 1.5%% du solde par SL ; 0 = marge fixe margin_usdt)")
+    ap.add_argument("--compound", type=int, default=1, help="1 = SL et marge en %% du capital à l'instant t (intérêts composés, non bridé à 18 USDT) ; 0 = fixe sur capital initial")
     ap.add_argument("--fee_pct", type=float, default=0.02, help="Frais par ordre en %% du notionnel (0.02 = 0.02%%, 0 = sans frais)")
     ap.add_argument("--trail_mode", default="check_30m", choices=["check_30m", "intra"])
     ap.add_argument("--params", default="", help="Réglages supplémentaires k=v;k2=v2")
@@ -196,6 +197,8 @@ def main():
     p = scv4.parse_params(a.params)
     p["fee_pct"] = float(a.fee_pct)
     p["trail_mode"] = a.trail_mode
+    if "compound=" not in (a.params or ""):
+        p["compound"] = int(a.compound)
     sl_roi = float(p.get("sl_roi_pct", 50.0))
     start_cap = float(a.capital) if a.capital > 0 else 600.0
     if a.risk_pct > 0:
@@ -291,6 +294,7 @@ def main():
     all_trades = pd.concat(all_trades_list, ignore_index=True) if all_trades_list else pd.DataFrame()
 
     if len(all_trades) > 0:
+        all_trades = scv4.apply_portfolio_compounding(all_trades, start_capital=start_cap, risk_pct=a.risk_pct, p=p)
         all_trades["_sort_ts"] = pd.to_datetime(all_trades["exit_time"], utc=True)
         all_trades = all_trades.sort_values("_sort_ts").drop(columns=["_sort_ts"]).reset_index(drop=True)
 

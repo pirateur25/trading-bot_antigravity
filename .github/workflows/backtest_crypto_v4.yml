@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Cryptos Futures à backtester (les 5 majeures rentables par défaut)"
-        default: "BTC,ETH,SOL,AVAX,INJ"
+        description: "Cryptos Futures à backtester (les 4 majeures rentables par défaut)"
+        default: "BTC,ETH,AVAX,INJ"
       start:
         description: "Date de début (AAAA-MM-JJ)"
         default: "2022-01-01"
@@ -16,8 +16,13 @@ on:
         description: "Capital de départ en USDT (ex: 600 pour 552-800 EUR)"
         default: "600"
       risk_pct:
-        description: "Risque par trade en % du capital (1.5 = 9 USDT/SL, soit 18 USDT de marge à x30 ; 0 = marge fixe 200 USDT)"
+        description: "Risque par trade en % du capital à l'instant t (1.5 = 1.5% du solde par SL ; 0 = marge fixe 200 USDT)"
         default: "1.5"
+      compound:
+        description: "Sizing dynamique en % du capital à l'instant t (oui = intérêts composés non bridés à 18 USDT ; non = fixe sur capital initial)"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
       fee_pct:
         description: "Frais par ordre en % du notionnel (0.02 = 0.02% futures standard, 0 = brut)"
         default: "0.02"
@@ -56,16 +61,20 @@ jobs:
           END: ${{ inputs.end }}
           CAPITAL: ${{ inputs.capital }}
           RISK_PCT: ${{ inputs.risk_pct }}
+          COMPOUND_IN: ${{ inputs.compound }}
           FEE_PCT: ${{ inputs.fee_pct }}
           TRAIL_MODE: ${{ inputs.trail_mode }}
           EXTRA_PARAMS: ${{ inputs.params }}
         run: |
+          COMP_FLAG=1
+          if [ "$COMPOUND_IN" = "non" ]; then COMP_FLAG=0; fi
           python backtest/run_crypto_v4.py \
             --symbols "$SYMBOLS" \
             --start "$START" \
             --end "$END" \
             --capital "$CAPITAL" \
             --risk_pct "$RISK_PCT" \
+            --compound "$COMP_FLAG" \
             --fee_pct "$FEE_PCT" \
             --trail_mode "$TRAIL_MODE" \
             --params "$EXTRA_PARAMS" \

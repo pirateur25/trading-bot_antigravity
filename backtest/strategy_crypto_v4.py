@@ -31,17 +31,17 @@ Spécifications du PDF (MoonX / Cubrik) + Améliorations validées :
 import numpy as np
 import pandas as pd
 
-# Les 5 cryptos majeures rentables par défaut (les 9 restent testables via l'input symbols du workflow)
+# Les 4 cryptos majeures rentables par défaut (SOL retiré car -20.6R et DD -53.4R ; toutes restent testables via --symbols)
 CRYPTO_V4_SYMBOLS = [
     "BTCUSD",
     "ETHUSD",
-    "SOLUSD",
     "AVAXUSD",
     "INJUSD",
 ]
 
 PARAMS = {
-    "margin_usdt": 18.0,        # Marge par défaut adaptée à un capital de 600 USDT (18 USDT de marge à x30 = 9 USDT par SL = 1.5% de risque)
+    "margin_usdt": 18.0,        # Marge de repli si risk_pct=0 (si risk_pct>0, calculée dynamiquement en % du capital à l'instant t)
+    "compound": 1,              # 1 = SL et Marge calculés en % du capital à l'instant t (intérêts composés, non bridé à 18 USDT) ; 0 = fixe sur capital initial
     "leverage": 30.0,           # Levier x30 isolé
     "tp_roi_pct": 300.0,        # TP fixe : +300% de ROI sur marge (+6 R)
     "sl_roi_pct": 50.0,         # SL initial : -50% de ROI sur marge (-1 R)
@@ -107,13 +107,17 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
     sl_roi_pct = float(p.get("sl_roi_pct", 50.0))
     one_r_roi = sl_roi_pct if sl_roi_pct > 0 else 50.0
 
-    # Si risk_pct > 0, la marge par trade est calibrée pour qu'un SL (-50% ROI) = risk_pct% du capital initial
-    if risk_pct is not None and float(risk_pct) > 0:
+    # Si risk_pct > 0, la marge par trade est calibrée pour qu'un SL (-50% ROI) = risk_pct% du capital
+    is_dynamic_risk = (risk_pct is not None and float(risk_pct) > 0)
+    use_compound = int(float(p.get("compound", 1))) != 0 and is_dynamic_risk
+    if is_dynamic_risk:
         one_r_usdt = float(capital) * (float(risk_pct) / 100.0)
         margin_usdt = one_r_usdt / (one_r_roi / 100.0)
     else:
         margin_usdt = float(p.get("margin_usdt", 200.0))
         one_r_usdt = margin_usdt * (one_r_roi / 100.0)
+
+    live_cap = float(capital)
 
     h4_lb = int(p.get("h4_lookback", 8))
     h4_thresh = float(p.get("h4_thresh", 0.35))
@@ -158,7 +162,7 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
     last_sl_poi = -1.0
 
     def close_position(pos_dict, exit_idx, exit_px, reason_str):
-        nonlocal last_sl_idx, last_sl_poi
+        nonlocal last_sl_idx, last_sl_poi, live_cap
         side = pos_dict["side"]
         en = pos_dict["entry"]
         roi_gross_pct = _roi_at_price(side, en, exit_px, lev)
@@ -167,8 +171,14 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
 
         r_gross = roi_gross_pct / one_r_roi
         r_net = roi_net_pct / one_r_roi
-        pnl_usdt = margin_usdt * (roi_net_pct / 100.0)
-        pnl_gross_usdt = margin_usdt * (roi_gross_pct / 100.0)
+        if use_compound:
+            cur_one_r = max(10.0, live_cap) * (float(risk_pct) / 100.0)
+            cur_margin = cur_one_r / (one_r_roi / 100.0)
+        else:
+            cur_margin = margin_usdt
+        pnl_usdt = cur_margin * (roi_net_pct / 100.0)
+        pnl_gross_usdt = cur_margin * (roi_gross_pct / 100.0)
+        live_cap = max(10.0, live_cap + pnl_usdt)
 
         if r_gross < -0.1:
             last_sl_idx = exit_idx
@@ -197,7 +207,7 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
             "r_gross": float(r_gross),
             "pnl_usdt": float(pnl_usdt),
             "pnl_gross_usdt": float(pnl_gross_usdt),
-            "margin_usdt": float(margin_usdt),
+            "margin_usdt": float(cur_margin),
             "leverage": float(lev),
             "bars": int(exit_idx - fill_i),
             "session": pos_dict["entry_type"],
@@ -520,6 +530,49 @@ def compute_period_table(trades_df: pd.DataFrame, period: str = "M", start_capit
     return pd.DataFrame(rows, columns=cols)
 
 
+def apply_portfolio_compounding(all_trades: pd.DataFrame, start_capital: float = 600.0, risk_pct: float = 1.5, p: dict = None) -> pd.DataFrame:
+    """
+    Recalcule dynamiquement le SL (1R) et la marge de chaque trade du portefeuille combiné
+    en pourcentage du capital global à l'instant t (`Solde_t * risk_pct / 100`), non bridé à 18 USDT.
+    """
+    if all_trades is None or len(all_trades) == 0:
+        return all_trades
+    p = dict(PARAMS if p is None else p)
+    use_compound = int(float(p.get("compound", 1))) != 0 and (risk_pct is not None and float(risk_pct) > 0)
+    if not use_compound:
+        return all_trades
+
+    sl_roi = float(p.get("sl_roi_pct", 50.0))
+    one_r_roi = sl_roi if sl_roi > 0 else 50.0
+    rk = float(risk_pct) / 100.0
+
+    df = all_trades.copy()
+    df["_sort_ts"] = pd.to_datetime(df["exit_time"], utc=True)
+    df = df.sort_values("_sort_ts").reset_index(drop=True)
+
+    bal = float(start_capital)
+    margins = []
+    pnls = []
+    pnls_gross = []
+
+    for _, row in df.iterrows():
+        cur_cap = max(10.0, bal)
+        one_r_t = cur_cap * rk
+        margin_t = one_r_t / (one_r_roi / 100.0)
+        pnl_t = margin_t * (float(row["roi_pct"]) / 100.0)
+        pnl_g_t = margin_t * (float(row["roi_gross_pct"]) / 100.0)
+        bal = max(10.0, bal + pnl_t)
+        margins.append(margin_t)
+        pnls.append(pnl_t)
+        pnls_gross.append(pnl_g_t)
+
+    df["margin_usdt"] = margins
+    df["pnl_usdt"] = pnls
+    df["pnl_gross_usdt"] = pnls_gross
+    df["pnl"] = pnls
+    return df.drop(columns=["_sort_ts"])
+
+
 def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start_capital: float = 600.0, risk_pct: float = 1.5, p: dict = None) -> str:
     """
     Formate le rapport complet CRYPTO V4 (Bilan par crypto, Bilan Annuel, Bilan Mensuel avec Drawdown, Gains/RR et RR moyen).
@@ -527,10 +580,14 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
     p = dict(PARAMS if p is None else p)
     lev = float(p.get("leverage", 30.0))
     sl_roi = float(p.get("sl_roi_pct", 50.0))
+    use_compound = int(float(p.get("compound", 1))) != 0 and (risk_pct is not None and float(risk_pct) > 0)
     if risk_pct is not None and float(risk_pct) > 0:
         one_r_usdt = float(start_capital) * (float(risk_pct) / 100.0)
         margin_usdt = one_r_usdt / (sl_roi / 100.0)
-        sizing_desc = f"Risque {risk_pct:g}% du capital ({one_r_usdt:.1f} USDT / SL) -> Marge {margin_usdt:.1f} USDT/trade à levier x{lev:g}"
+        comp_str = "DYNAMIQUE à l'instant t (intérêts composés, non bridé)" if use_compound else f"FIXE sur capital initial ({margin_usdt:.1f} USDT)"
+        sizing_desc = (
+            f"Risque {risk_pct:g}% du capital ({comp_str} | départ: 1R={one_r_usdt:.1f} USDT, Marge={margin_usdt:.1f} USDT à x{lev:g})"
+        )
     else:
         margin_usdt = float(p.get("margin_usdt", 200.0))
         one_r_usdt = margin_usdt * (sl_roi / 100.0)
@@ -620,3 +677,241 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
         )
 
     return "\n".join(lines)
+
+
+def compute_live_trailing_sl(side: int, entry: float, px: float, current_sl: float = None, p: dict = None) -> dict:
+    """
+    Calcule le palier de Trailing SL atteint en temps réel (Étape 2 du PDF).
+    Le SL ne recule jamais ; seul le palier le plus haut atteint s'applique.
+    Retourne dict(roi_cur, tier, target_sl_roi, target_sl_price, tp_price, should_update).
+    """
+    p = dict(PARAMS if p is None else p)
+    lev = float(p.get("leverage", 30.0))
+    tp_roi_pct = float(p.get("tp_roi_pct", 300.0))
+    sl_roi_pct = float(p.get("sl_roi_pct", 50.0))
+
+    roi_cur = _roi_at_price(side, entry, px, lev)
+    tp_px = _price_at_roi(side, entry, tp_roi_pct, lev)
+    target_sl_roi = -sl_roi_pct
+    tier_reached = 0
+
+    for idx, (trig_roi, lock_roi) in enumerate(TRAIL_TIERS, 1):
+        if roi_cur >= trig_roi:
+            tier_reached = idx
+            target_sl_roi = lock_roi
+
+    target_sl_px = _price_at_roi(side, entry, target_sl_roi, lev)
+
+    # Le SL ne recule jamais : vérifier si le nouveau SL est plus protecteur que current_sl
+    should_update = False
+    if tier_reached > 0:
+        if current_sl is None or current_sl <= 0:
+            should_update = True
+        elif side == 1 and target_sl_px > current_sl * 1.0002:
+            should_update = True
+        elif side == -1 and target_sl_px < current_sl * 0.9998:
+            should_update = True
+
+    return {
+        "roi_cur": float(roi_cur),
+        "tier": int(tier_reached),
+        "target_sl_roi": float(target_sl_roi),
+        "target_sl_price": float(target_sl_px),
+        "tp_price": float(tp_px),
+        "tp_roi": float(tp_roi_pct),
+        "should_update": bool(should_update),
+    }
+
+
+def evaluate_live_signal(
+    df_15m: pd.DataFrame,
+    df_4h: pd.DataFrame,
+    px: float = None,
+    p: dict = None,
+    hours_since_last_sl: float = 999.0,
+    last_sl_poi: float = -1.0,
+) -> dict:
+    """
+    Évalue en temps réel (Étape 3 du PDF + Filtres validés) sur les bougies 15m et 4h clôturées :
+      - Cooldown après SL (`sl_cooldown_hours`)
+      - Biais H4 (`net / range` sur 8 dernières clôtures 4h)
+      - Fenêtre M15 (`0.4% <= range/prix <= m15_max_range_pct` sur 16 dernières clôtures 15m)
+      - Direction (biais H4 ou momentum M15)
+      - POI (équilibre 50% SMC) + validation du Côté (`long: POI < prix`, `short: POI > prix`)
+      - Anti-répétition du même POI cassé (`block_same_poi`)
+      - Type d'entrée (`MARKET` ou `LIMIT`) + prix TP (+300% ROI) et SL (-50% ROI).
+    """
+    p = dict(PARAMS if p is None else p)
+    lev = float(p.get("leverage", 30.0))
+    tp_roi_pct = float(p.get("tp_roi_pct", 300.0))
+    sl_roi_pct = float(p.get("sl_roi_pct", 50.0))
+    h4_lb = int(p.get("h4_lookback", 8))
+    h4_thresh = float(p.get("h4_thresh", 0.35))
+    m15_lb = int(p.get("m15_lookback", 16))
+    m15_min_rng = float(p.get("m15_min_range_pct", 0.4)) / 100.0
+    m15_max_rng = float(p.get("m15_max_range_pct", 1.6)) / 100.0
+    cd_hours = float(p.get("sl_cooldown_hours", 2.0))
+    block_same_poi = int(float(p.get("block_same_poi", 1))) != 0
+    same_poi_tol = float(p.get("same_poi_tol_pct", 0.15)) / 100.0
+    poi_fib = float(p.get("poi_fib", 0.5))
+    mkt_tol = float(p.get("mkt_tol_pct", 0.05)) / 100.0
+    lim_off = float(p.get("lim_offset_pct", 0.1)) / 100.0
+
+    if df_15m is None or len(df_15m) < m15_lb or df_4h is None or len(df_4h) < h4_lb:
+        return {"action": "SKIP", "reason": "Données 15m/4h insuffisantes"}
+
+    w4 = df_4h.iloc[-h4_lb:]
+    w15 = df_15m.iloc[-m15_lb:]
+
+    h4_arr = w4["high"].to_numpy(dtype=float)
+    l4_arr = w4["low"].to_numpy(dtype=float)
+    c4_arr = w4["close"].to_numpy(dtype=float)
+
+    h15_arr = w15["high"].to_numpy(dtype=float)
+    l15_arr = w15["low"].to_numpy(dtype=float)
+    c15_arr = w15["close"].to_numpy(dtype=float)
+
+    cur_px = float(px) if (px is not None and px > 0) else float(c15_arr[-1])
+
+    # Cooldown après SL
+    if cd_hours > 0 and hours_since_last_sl < cd_hours:
+        return {
+            "action": "SKIP",
+            "reason": f"Cooldown après SL actif ({hours_since_last_sl:.2f}h < {cd_hours:.1f}h)",
+            "px": cur_px,
+        }
+
+    # 3.1 Biais H4
+    net_h4 = float(c4_arr[-1] - c4_arr[0])
+    rng_h4 = float(np.max(h4_arr) - np.min(l4_arr))
+    biais_h4 = (net_h4 / rng_h4) if rng_h4 > 0 else 0.0
+
+    # 3.2 Fenêtre M15
+    win_hi = float(np.max(h15_arr))
+    win_lo = float(np.min(l15_arr))
+    rng_m15 = win_hi - win_lo
+    rng_m15_ratio = rng_m15 / cur_px if cur_px > 0 else 0.0
+
+    if rng_m15_ratio < m15_min_rng:
+        return {
+            "action": "SKIP",
+            "reason": f"Range M15 trop faible ({rng_m15_ratio*100:.2f}% < {m15_min_rng*100:.2f}%)",
+            "px": cur_px,
+            "biais_h4": biais_h4,
+            "rng_m15_pct": rng_m15_ratio * 100.0,
+        }
+    if m15_max_rng > 0 and rng_m15_ratio > m15_max_rng:
+        return {
+            "action": "SKIP",
+            "reason": f"Range M15 explosif / anti-krach ({rng_m15_ratio*100:.2f}% > {m15_max_rng*100:.2f}%)",
+            "px": cur_px,
+            "biais_h4": biais_h4,
+            "rng_m15_pct": rng_m15_ratio * 100.0,
+        }
+
+    # 3.3 Direction
+    net_m15 = float(c15_arr[-1] - c15_arr[0])
+    mom_m15 = (net_m15 / rng_m15) if rng_m15 > 0 else 0.0
+    if biais_h4 > h4_thresh:
+        direction = 1
+    elif biais_h4 < -h4_thresh:
+        direction = -1
+    else:
+        direction = 1 if mom_m15 > 0 else (-1 if mom_m15 < 0 else 0)
+
+    if direction == 0:
+        return {"action": "SKIP", "reason": "Direction neutre (H4=0 et M15=0)", "px": cur_px}
+
+    # 3.4 POI & Côté
+    if direction == 1:
+        i_lo = int(np.argmin(l15_arr))
+        after_hi = float(np.max(h15_arr[i_lo:]))
+        poi = after_hi - poi_fib * (after_hi - win_lo)
+
+        if block_same_poi and last_sl_poi > 0 and abs(poi - last_sl_poi) / last_sl_poi < same_poi_tol:
+            return {
+                "action": "SKIP",
+                "reason": f"POI haussier ({poi:.4f}) identique au dernier POI invalidé par SL ({last_sl_poi:.4f})",
+                "px": cur_px,
+                "poi": poi,
+            }
+
+        if not (poi < cur_px):
+            return {
+                "action": "SKIP",
+                "reason": f"Long invalide : POI ({poi:.4f}) >= prix ({cur_px:.4f})",
+                "px": cur_px,
+                "poi": poi,
+                "biais_h4": biais_h4,
+                "rng_m15_pct": rng_m15_ratio * 100.0,
+            }
+
+        if cur_px <= poi * (1.0 + mkt_tol):
+            entry_type = "MARKET"
+            ref_entry = cur_px
+        else:
+            entry_type = "LIMIT"
+            ref_entry = float(poi * (1.0 - lim_off))
+
+        sl_px = _price_at_roi(1, ref_entry, -sl_roi_pct, lev)
+        tp_px = _price_at_roi(1, ref_entry, tp_roi_pct, lev)
+        return {
+            "action": entry_type,
+            "side": "long",
+            "side_int": 1,
+            "px": cur_px,
+            "poi": float(poi),
+            "entry_price": float(ref_entry),
+            "sl_price": float(sl_px),
+            "tp_price": float(tp_px),
+            "biais_h4": float(biais_h4),
+            "mom_m15": float(mom_m15),
+            "rng_m15_pct": float(rng_m15_ratio * 100.0),
+        }
+
+    else:
+        i_hi = int(np.argmax(h15_arr))
+        after_lo = float(np.min(l15_arr[i_hi:]))
+        poi = after_lo + poi_fib * (win_hi - after_lo)
+
+        if block_same_poi and last_sl_poi > 0 and abs(poi - last_sl_poi) / last_sl_poi < same_poi_tol:
+            return {
+                "action": "SKIP",
+                "reason": f"POI baissier ({poi:.4f}) identique au dernier POI invalidé par SL ({last_sl_poi:.4f})",
+                "px": cur_px,
+                "poi": poi,
+            }
+
+        if not (poi > cur_px):
+            return {
+                "action": "SKIP",
+                "reason": f"Short invalide : POI ({poi:.4f}) <= prix ({cur_px:.4f})",
+                "px": cur_px,
+                "poi": poi,
+                "biais_h4": biais_h4,
+                "rng_m15_pct": rng_m15_ratio * 100.0,
+            }
+
+        if cur_px >= poi * (1.0 - mkt_tol):
+            entry_type = "MARKET"
+            ref_entry = cur_px
+        else:
+            entry_type = "LIMIT"
+            ref_entry = float(poi * (1.0 + lim_off))
+
+        sl_px = _price_at_roi(-1, ref_entry, -sl_roi_pct, lev)
+        tp_px = _price_at_roi(-1, ref_entry, tp_roi_pct, lev)
+        return {
+            "action": entry_type,
+            "side": "short",
+            "side_int": -1,
+            "px": cur_px,
+            "poi": float(poi),
+            "entry_price": float(ref_entry),
+            "sl_price": float(sl_px),
+            "tp_price": float(tp_px),
+            "biais_h4": float(biais_h4),
+            "mom_m15": float(mom_m15),
+            "rng_m15_pct": float(rng_m15_ratio * 100.0),
+        }
+

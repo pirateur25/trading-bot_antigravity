@@ -30,19 +30,22 @@ Backtests lancés sur GitHub Actions (workflow `.github/workflows/backtest.yml`)
     - Interdiction absolue d'entrer si la moyenne 60j `B` est déjà dépassée ou à moins de `1.0 R`, ou si un obstacle (`B`, `C`, `PDH/PDL`, `PSH/PSL`, `FVG H1`) bloque le Break-Even (`be_rr >= 1.0`).
     - Mode `"rv3_dyn"` : RR minimum strict de `2.0 R` et extension dynamique vers les cibles structurelles / bornes RV3 `B`/`C` jusqu'à `3.6 R` (moyenne ~`2.6 R`).
   - **Visualiseur RV3** (`viewer/template.html` & `viewer/viewer.html`) : affiche l'Open US (jaune), les lignes A (gris), B (cyan/rouge), C (teal/rouge foncé), les zones ombrées `B -> C` et le tableau complet de calibration RV3 en bas à droite.
-- **CRYPTO V4 — A2-R Stratégie SMC Crypto Futures (MoonX / Cubrik)** (`backtest/strategy_crypto_v4.py`, `backtest/run_crypto_v4.py`, workflow `.github/workflows/backtest_crypto_v4.yml`) :
-  - **9 cryptos Futures** : `BTC, ETH, SOL, XRP, AVAX, ZEC, INJ, PUMP, HYPE` (téléchargement auto 5m via Binance USD-M Futures, Binance Spot, Bybit Linear Futures, KuCoin, Hyperliquid dans `backtest/data_crypto.py`).
-  - **Sizing fixe** : marge `200 USDT` par instrument, levier `×30` isolé (`notionnel = 6 000 USDT`), 1 position ou ordre au repos max par instrument.
+- **CRYPTO V4 Optimisée — A2-R Stratégie SMC Crypto Futures (MoonX / Cubrik)** (`backtest/strategy_crypto_v4.py`, `backtest/run_crypto_v4.py`, exécuteur live `backtest/live_crypto_v4_moonx.py`, workflows `.github/workflows/backtest_crypto_v4.yml` et `.github/workflows/live_crypto_v4.yml`) :
+  - **4 cryptos Futures rentables validées par défaut** : `BTC, ETH, AVAX, INJ` (`+306.0 R` cumulés sur 2022–2026 ; `SOL` retiré par défaut car `-20.6 R` et DD `-53.4 R` ; les 9 cryptos restent testables via `--symbols`).
+  - **Sizing dynamique en % du capital à l'instant $t$ (`compound = 1`, non bridé à 18 USDT)** :
+    - `1 R (risque SL) = Solde_t * (risk_pct / 100)` (ex: `1.5 %` du solde actuel sur MoonX).
+    - `Marge isolée à levier ×30 (SL = -50 % ROI) = 2 * 1 R = Solde_t * (2 * risk_pct / 100)`.
   - **TP / SL & Trailing SL (sur ROI marge)** :
-    - `1 R = -50 %` de ROI sur marge (`-100 USDT`, mouvement de prix de `1.6667 %`).
-    - `TP fixe = +300 %` de ROI sur marge (`+6 R = +600 USDT`, mouvement de prix de `10.0 %`).
+    - `1 R = -50 %` de ROI sur marge (mouvement de prix de `1.6667 %`).
+    - `TP fixe = +300 %` de ROI sur marge (`+6 R`, mouvement de prix de `10.0 %`).
     - `Trailing SL` : `ROI >= +50%` $\rightarrow$ SL au BE (`0%` / `0 R`) ; `ROI >= +100%` $\rightarrow$ SL à `+50%` (`+1 R`) ; `ROI >= +150%` $\rightarrow$ SL à `+100%` (`+2 R`) ; `ROI >= +200%` $\rightarrow$ SL à `+150%` (`+3 R`).
-  - **Détection & Ré-analyse toutes les 30 min** :
+  - **Détection, Filtres Anti-Krach & Ré-analyse toutes les 30 min** :
     - Biais H4 : `net/range` sur 8 clôtures 4h (`> +0.35` haussier, `< -0.35` baissier, sinon neutre).
-    - Fenêtre M15 : `range (haut - bas) / prix >= 0.4 %` sur 16 clôtures 15m ; direction H4 ou momentum M15 si H4 neutre.
+    - Fenêtre M15 encadrée : `0.4 % <= range (haut - bas) / prix <= 1.6 %` (`m15_max_range_pct = 1.6`) sur 16 clôtures 15m ; direction H4 ou momentum M15 si H4 neutre.
+    - Cooldown après SL (`sl_cooldown_hours = 2.0h`) et blocage du même POI invalidé (`block_same_poi = 1`, tolérance `0.15 %`).
     - POI : `long = after_hi - 0.5 * (after_hi - win_lo)` (`POI < prix`), `short = after_lo + 0.5 * (win_hi - after_lo)` (`POI > prix`).
     - Entrée : au marché si `prix <= POI * 1.0005` (long) / `prix >= POI * 0.9995` (short), sinon limite à `POI * 0.999` (long) / `POI * 1.001` (short), ré-ajustée si écart `> 0.1 %`.
-  - **Reporting complet** : RR moyen, Gains/RR et Drawdown max par Mois (`CRYPTO_V4_monthly.csv`), par Année (`CRYPTO_V4_yearly.csv`), par crypto et portefeuille global (`PORTFOLIO_CRYPTO_V4.png`).
+  - **Exécution Live autonome 0 €/mois sur MoonX** (`backtest/live_crypto_v4_moonx.py` + `.github/workflows/live_crypto_v4.yml` déclenché toutes les 30m via `cron-job.org`) : connexion MCP (`https://api.moon-x.io/mcp?token=mcp_...` dans `MOONX_MCP_URL`), lecture du solde réel à l'instant $t$, gestion des positions et ordres limites, persistance de l'état (`data/live_crypto_v4_state.json`) et alertes Telegram.
 - Simulation FTMO (`backtest/sim_challenge.py`) avec superposition des trades : OPR seule / OTE+FVG+OPR / OTE+FVG.
 - Visualiseur : `viewer/template.html` -> `viewer/viewer.html` via
   `python3 backtest/viewer_export.py build --symbols EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30 --out viewer/viewer.html` (fonctionne sans numpy).

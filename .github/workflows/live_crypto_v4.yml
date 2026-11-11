@@ -1,0 +1,70 @@
+name: Live CRYPTO V4 MoonX (Toutes les 30m)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Mode simulation sans passer d'ordre réel (oui = test connexion + Telegram, non = trading réel)"
+        type: choice
+        default: "non"
+        options: ["non", "oui"]
+      symbols:
+        description: "Cryptos actives (les 4 rentables validées par défaut)"
+        default: "BTC,ETH,AVAX,INJ"
+      risk_pct:
+        description: "Risque par trade en % du capital MoonX à l'instant t (ex: 1.5 = 1.5% du solde par SL)"
+        default: "1.5"
+      params:
+        description: "Réglages supplémentaires (ex: m15_max_range_pct=1.6;sl_cooldown_hours=2.0;block_same_poi=1)"
+        default: ""
+  repository_dispatch:
+    types: [cron_30m]
+
+concurrency:
+  group: live-crypto-v4-moonx
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  live_crypto_v4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances légères
+        run: pip install requests pandas numpy
+
+      - name: Exécution du cycle 30m CRYPTO V4 sur MoonX
+        env:
+          MOONX_MCP_URL: ${{ secrets.MOONX_MCP_URL }}
+          MOONX_TOKEN: ${{ secrets.MOONX_TOKEN }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run || 'non' }}
+          SYMBOLS: ${{ inputs.symbols || 'BTC,ETH,AVAX,INJ' }}
+          RISK_PCT: ${{ inputs.risk_pct || '1.5' }}
+          EXTRA_PARAMS: ${{ inputs.params || '' }}
+        run: |
+          python backtest/live_crypto_v4_moonx.py \
+            --symbols "$SYMBOLS" \
+            --risk_pct "$RISK_PCT" \
+            --dry_run "$DRY_RUN" \
+            --params "$EXTRA_PARAMS" \
+            --state_file data/live_crypto_v4_state.json
+
+      - name: Sauvegarde de l'état Live (Cooldown SL & Historique notifié)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/live_crypto_v4_state.json || true
+          git diff --cached --quiet || (git pull --rebase origin main && git commit -m "chore(live): état Crypto V4 $(date -u +'%Y-%m-%d %H:%M')" && git push) || echo "État inchangé"
+
