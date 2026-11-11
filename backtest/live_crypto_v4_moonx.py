@@ -306,46 +306,66 @@ def _norm_base_coin(sym: str) -> str:
     return s
 
 
-def _parse_float(d, keys: tuple, default: float = 0.0) -> float:
+def _wallet_priority(label_or_obj) -> int:
+    s = (label_or_obj if isinstance(label_or_obj, str) else json.dumps(label_or_obj, ensure_ascii=False)).lower()
+    if any(w in s for w in ("spot", "forex", "fx", "earn", "funding", "copy")):
+        if not any(w in s for w in ("future", "perp", "contract", "deriv")):
+            return 2
+    if any(w in s for w in ("future", "perp", "contract", "deriv")):
+        return 0
+    return 1
+
+
+def _parse_float(d, keys: tuple, default: float = 0.0, require_positive: bool = False) -> float:
     if isinstance(d, list):
-        # Prioriser les entrées futures / usdt si c'est une liste de wallets
         sorted_items = sorted(
-            [x for x in d if isinstance(x, dict)],
-            key=lambda x: 0 if any(w in json.dumps(x).lower() for w in ("future", "perp", "contract", "usdt")) else 1,
+            [x for x in d if isinstance(x, (dict, list))],
+            key=_wallet_priority,
         )
         for item in sorted_items:
-            res = _parse_float(item, keys, default=-999999.0)
-            if res != -999999.0:
+            res = _parse_float(item, keys, default=-999999.0, require_positive=require_positive)
+            if res != -999999.0 and (not require_positive or res > 0):
                 return res
         return default
 
     if not isinstance(d, dict):
         return default
 
-    for k in keys:
-        if k in d and d[k] is not None:
-            v = _to_float(d[k], default=-999999.0)
-            if v != -999999.0:
-                return v
+    # Si ce dictionnaire a des sous-sections explicites (ex: spot, futures, forex), chercher d'abord dans futures !
+    sub_keys_lower = {str(k).lower() for k in d.keys()}
+    has_wallet_sections = any(w in sub_keys_lower for w in ("futures", "future", "perp", "perpetual", "contract", "derivatives"))
 
-    lower_d = {str(k).lower().replace("_", ""): v for k, v in d.items()}
-    for k in keys:
-        nk = k.lower().replace("_", "")
-        if nk in lower_d and lower_d[nk] is not None:
-            v = _to_float(lower_d[nk], default=-999999.0)
-            if v != -999999.0:
-                return v
+    if not has_wallet_sections:
+        for k in keys:
+            if k in d and d[k] is not None and not isinstance(d[k], (dict, list)):
+                v = _to_float(d[k], default=-999999.0)
+                if v != -999999.0 and (not require_positive or v > 0):
+                    return v
 
-    # Prioriser les sous-dictionnaires "futures" / "account" / "wallet" / "usdt"
-    sub_items = list(d.items())
-    sub_items.sort(
-        key=lambda kv: 0 if any(w in str(kv[0]).lower() for w in ("future", "perp", "contract", "usdt", "wallet", "account", "margin")) else 1
-    )
+        lower_d = {str(k).lower().replace("_", ""): v for k, v in d.items() if not isinstance(v, (dict, list))}
+        for k in keys:
+            nk = k.lower().replace("_", "")
+            if nk in lower_d and lower_d[nk] is not None:
+                v = _to_float(lower_d[nk], default=-999999.0)
+                if v != -999999.0 and (not require_positive or v > 0):
+                    return v
+
+    # Parcourir les sous-dictionnaires/listes en priorisant "futures" et en ignorant "spot"/"forex" à 0
+    sub_items = [(k, v) for k, v in d.items() if isinstance(v, (dict, list))]
+    sub_items.sort(key=lambda kv: _wallet_priority(str(kv[0]) + " " + json.dumps(kv[1], ensure_ascii=False)[:200]))
     for _, sub_v in sub_items:
-        if isinstance(sub_v, (dict, list)):
-            res = _parse_float(sub_v, keys, default=-999999.0)
-            if res != -999999.0:
-                return res
+        res = _parse_float(sub_v, keys, default=-999999.0, require_positive=require_positive)
+        if res != -999999.0 and (not require_positive or res > 0):
+            return res
+
+    # Si has_wallet_sections était True mais rien trouvé dans les sous-sections, tenter au niveau racine
+    if has_wallet_sections:
+        for k in keys:
+            if k in d and d[k] is not None and not isinstance(d[k], (dict, list)):
+                v = _to_float(d[k], default=-999999.0)
+                if v != -999999.0 and (not require_positive or v > 0):
+                    return v
+
     return default
 
 
@@ -358,7 +378,7 @@ def parse_account_balance(
     """
     Extrait `(realized_capital_usdt, free_margin_usdt, used_margin_usdt)` depuis `get_account_overview`.
     Le `realized_capital_usdt` correspond au capital du compte AVANT le PnL latent des positions en cours
-    (ex: 495 USDT = 385 USDT disponible + 110 USDT de marge engagée, et non 540 USDT d'equity flottante).
+    (ex: 495.xx USDT = disponible + marge engagée, et non l'equity flottante avec PnL latent).
     """
     import re
 
@@ -366,17 +386,21 @@ def parse_account_balance(
         overview,
         (
             "walletBalance", "futuresBalance", "accountBalance", "cashBalance",
-            "realizedBalance", "balance", "totalWalletBalance", "usdtBalance", "totalBalance",
+            "realizedBalance", "totalWalletBalance", "usdtBalance", "totalBalance",
+            "marginBalance", "balance", "total", "collateral",
         ),
         default=0.0,
+        require_positive=True,
     )
     free_m = _parse_float(
         overview,
         (
             "availableBalance", "availableMargin", "freeMargin", "freeBalance",
             "available", "free", "transferable", "withdrawable", "canUse", "availableUsdt",
+            "crossAvailable", "marginAvailable",
         ),
         default=0.0,
+        require_positive=True,
     )
     used_m = _parse_float(
         overview,
@@ -386,24 +410,27 @@ def parse_account_balance(
             "frozenMargin", "frozenBalance", "frozen", "locked", "marginUsed",
         ),
         default=0.0,
+        require_positive=True,
     )
     total_eq = _parse_float(
         overview,
-        ("totalEquity", "equity", "futuresEquity", "totalMarginBalance", "netAssetValue", "nav", "totalUsdt"),
+        ("totalEquity", "equity", "futuresEquity", "totalMarginBalance", "netAssetValue", "nav", "totalUsdt", "accountEquity"),
         default=0.0,
+        require_positive=True,
     )
     un_pnl = _parse_float(
         overview,
-        ("unrealizedPnl", "unRealizedProfit", "unrealizedProfit", "upl", "floatingPnl", "openPnl", "CrossUnPnl"),
+        ("unrealizedPnl", "unRealizedProfit", "unrealizedProfit", "upl", "floatingPnl", "openPnl", "crossUnPnl", "pnl"),
         default=-999999.0,
+        require_positive=False,
     )
 
-    # Si get_account_overview a renvoyé du texte formaté (raw_text), extraire par regex
+    # Si get_account_overview a renvoyé du texte formaté (raw_text), extraire tous les montants par regex
     if isinstance(overview, dict) and "raw_text" in overview and wallet_bal <= 0 and free_m <= 0:
         txt = str(overview["raw_text"])
-        m_bal = re.search(r"(?:wallet\s*balance|balance|solde|capital)\s*[:=]\s*\$?([0-9]+(?:\.[0-9]+)?)", txt, re.I)
-        m_av = re.search(r"(?:available|free|disponible|libre)\s*(?:margin|balance)?\s*[:=]\s*\$?([0-9]+(?:\.[0-9]+)?)", txt, re.I)
-        m_lk = re.search(r"(?:used|locked|position|blocked|occupied)\s*(?:margin|balance)?\s*[:=]\s*\$?([0-9]+(?:\.[0-9]+)?)", txt, re.I)
+        m_bal = re.search(r"(?:wallet\s*balance|futures\s*balance|total\s*balance|balance|solde|capital)[^0-9\n]{0,25}([0-9]+(?:\.[0-9]+)?)", txt, re.I)
+        m_av = re.search(r"(?:available|free|disponible|libre)[^0-9\n]{0,25}([0-9]+(?:\.[0-9]+)?)", txt, re.I)
+        m_lk = re.search(r"(?:used|locked|position|blocked|occupied|engag)[^0-9\n]{0,25}([0-9]+(?:\.[0-9]+)?)", txt, re.I)
         if m_bal:
             wallet_bal = float(m_bal.group(1))
         if m_av:
@@ -411,32 +438,42 @@ def parse_account_balance(
         if m_lk:
             used_m = float(m_lk.group(1))
 
-    # Si used_m n'est pas fourni dans overview, additionner la marge engagée dans les positions et ordres ouverts
-    if used_m <= 0:
-        pos_margin_sum = 0.0
-        for p_it in (positions_list or []):
-            if isinstance(p_it, dict):
-                m_val = _parse_float(
-                    p_it,
-                    ("margin", "initialMargin", "isolatedMargin", "positionMargin", "usedMargin", "collateral", "marginUsdt"),
-                    default=0.0,
-                )
-                if m_val > 0:
-                    pos_margin_sum += m_val
-        for o_it in (orders_list or []):
-            if isinstance(o_it, dict):
-                m_val = _parse_float(o_it, ("margin", "initialMargin", "orderMargin", "lockedMargin", "marginUsdt"), default=0.0)
-                if m_val > 0:
-                    pos_margin_sum += m_val
-        if pos_margin_sum > 0:
-            used_m = pos_margin_sum
+    # Additionner la marge engagée dans les positions et ordres ouverts si used_m non fourni dans overview
+    pos_margin_sum = 0.0
+    for p_it in (positions_list or []):
+        if isinstance(p_it, dict):
+            m_val = _parse_float(
+                p_it,
+                ("margin", "initialMargin", "isolatedMargin", "positionMargin", "usedMargin", "collateral", "marginUsdt"),
+                default=0.0,
+                require_positive=True,
+            )
+            if m_val > 0:
+                pos_margin_sum += m_val
+    for o_it in (orders_list or []):
+        if isinstance(o_it, dict):
+            m_val = _parse_float(
+                o_it,
+                ("margin", "initialMargin", "orderMargin", "lockedMargin", "marginUsdt"),
+                default=0.0,
+                require_positive=True,
+            )
+            if m_val > 0:
+                pos_margin_sum += m_val
+    if used_m <= 0 and pos_margin_sum > 0:
+        used_m = pos_margin_sum
 
-    # Calculer le capital réalisé (ex: 495 USDT = 385 dispo + 110 marge engagée, hors PnL latent)
+    # Calculer le capital réalisé avec les centimes exacts :
+    # Attention : si MoonX appelle "balance" le solde disponible (wallet_bal == free_m) alors qu'il y a used_m > 0,
+    # le vrai capital réalisé avant ouverture des positions est free_m + used_m !
     realized_cap = 0.0
-    if wallet_bal > 0:
-        realized_cap = wallet_bal
-    elif free_m > 0 and used_m > 0:
-        realized_cap = free_m + used_m
+    if free_m > 0 and used_m > 0:
+        if wallet_bal > 0 and abs(wallet_bal - free_m) > 1.0:
+            realized_cap = wallet_bal
+        else:
+            realized_cap = free_m + used_m
+    elif wallet_bal > 0:
+        realized_cap = wallet_bal + (used_m if free_m <= 0 else 0.0)
     elif total_eq > 0 and un_pnl != -999999.0:
         realized_cap = total_eq - un_pnl
     elif total_eq > 0:
@@ -449,7 +486,7 @@ def parse_account_balance(
     if realized_cap <= 0:
         realized_cap = fallback_capital
     if free_m <= 0:
-        free_m = realized_cap
+        free_m = max(0.0, realized_cap - used_m) if realized_cap > used_m else realized_cap
 
     return float(realized_cap), float(free_m), float(used_m)
 
@@ -900,11 +937,13 @@ def main():
 
     save_bot_state(a.state_file, state)
 
+    raw_ov_preview = f"\n🔍 Brut MoonX : {json.dumps(overview, ensure_ascii=False)[:450]}" if is_dry else ""
     summary = (
         f"🤖 Run Live CRYPTO V4 ({now_str}){' [DRY-RUN]' if is_dry else ''}\n"
         f"• Capital réalisé MoonX : {total_eq:.2f} USDT (Dispo : {free_margin:.2f} USDT | Engagé : {used_margin:.2f} USDT)\n"
         f"• Sizing dynamique ({a.risk_pct:g}%) : 1R = {one_r_usdt:.2f} USDT | Marge = {trade_margin_usdt:.2f} USDT (x{lev:g} {margin_mode})\n"
         + ("\n".join(actions_log) if actions_log else "• Aucune nouvelle action sur ce créneau 30m.")
+        + raw_ov_preview
     )
     print("\n" + summary, flush=True)
     if is_dry:
