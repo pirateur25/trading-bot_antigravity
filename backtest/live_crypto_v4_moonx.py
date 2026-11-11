@@ -900,6 +900,17 @@ def main():
                     elif (not is_sl) and cur_tp_px <= 0:
                         cur_tp_px = vv
 
+            # MoonX n'expose pas SL/TP dans la position : utiliser la mémoire de ce que le BOT a posé (jamais reculer le SL)
+            bot_sl = state.setdefault("bot_sl", {})
+            mem = bot_sl.get(coin)
+            if mem and abs(float(mem.get("entry", 0)) - entry_px) / max(entry_px, 1e-9) < 0.002:
+                if cur_sl_px <= 0:
+                    cur_sl_px = float(mem.get("sl", 0.0))
+                if cur_tp_px <= 0:
+                    cur_tp_px = float(mem.get("tp", 0.0))
+            elif mem:
+                bot_sl.pop(coin, None)  # nouvelle position sur ce coin : mémoire obsolète
+
             trail = scv4.compute_live_trailing_sl(side_int, entry_px, mkt_px, current_sl=cur_sl_px, p=p)
 
             side_lbl = 'LONG' if side_int == 1 else 'SHORT'
@@ -915,7 +926,8 @@ def main():
                 tg_send(
                     f"🔬 DEBUG {coin} champs bruts MoonX (à m'envoyer si SL/TP lu à 0) :\n"
                     f"POSITION = {json.dumps(pos, ensure_ascii=False)[:900]}\n"
-                    f"TP/SL ORDERS = {json.dumps(tpsl_by_coin.get(coin, []), ensure_ascii=False)[:900]}"
+                    f"TP/SL ORDERS = {json.dumps(tpsl_by_coin.get(coin, []), ensure_ascii=False)[:500]}\n"
+                    f"RAW list_futures_tp_sl_orders = {json.dumps(tpsl_raw, ensure_ascii=False)[:500]}"
                 )
             if coin not in open_pos_by_coin:
                 state.get("raw_dumped", {}).pop(coin, None)
@@ -937,6 +949,8 @@ def main():
                 if not is_dry:
                     ok = apply_tp_sl(client, coin, pos_id, side_int, entry_px, trail["tp_price"],
                                      trail["target_sl_price"], -sl_roi_pct, tp_roi_pct, "pose TP/SL")
+                    if ok:
+                        bot_sl[coin] = {"sl": trail["target_sl_price"], "tp": trail["tp_price"], "entry": entry_px}
                     tg_send(f"{'✅' if ok else '⚠️'} {msg}")
                 else:
                     tg_send(f"[SIMULATION] {msg}")
@@ -950,6 +964,8 @@ def main():
                 if not is_dry:
                     ok = apply_tp_sl(client, coin, pos_id, side_int, entry_px, trail["tp_price"],
                                      trail["target_sl_price"], trail["target_sl_roi"], tp_roi_pct, f"trailing palier {trail['tier']}")
+                    if ok:
+                        bot_sl[coin] = {"sl": trail["target_sl_price"], "tp": trail["tp_price"], "entry": entry_px}
                     tg_send(f"{'✅' if ok else '⚠️'} {msg}")
                 else:
                     tg_send(f"[SIMULATION] {msg}")
@@ -1071,7 +1087,9 @@ def main():
                     sl_px = scv4._price_at_roi(s_int, en_px, -sl_roi_pct, lev)
                     tp_px = scv4._price_at_roi(s_int, en_px, tp_roi_pct, lev)
                 s_int_open = 1 if side_str == "long" else -1
-                apply_tp_sl(client, coin, new_pos_id, s_int_open, en_px, tp_px, sl_px, -sl_roi_pct, tp_roi_pct, "ouverture marché")
+                ok_open = apply_tp_sl(client, coin, new_pos_id, s_int_open, en_px, tp_px, sl_px, -sl_roi_pct, tp_roi_pct, "ouverture marché")
+                if ok_open:
+                    state.setdefault("bot_sl", {})[coin] = {"sl": sl_px, "tp": tp_px, "entry": en_px}
                 free_margin = max(0.0, free_margin - trade_margin_usdt)
 
             msg = (
@@ -1122,6 +1140,7 @@ def main():
         if c_old not in open_pos_by_coin:
             kp.pop(c_old, None)
     state["known_positions"] = kp
+    state["raw_dumped"] = {k: v for k, v in state.get("raw_dumped", {}).items() if k in open_pos_by_coin}
 
     save_bot_state(a.state_file, state)
 
