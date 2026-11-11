@@ -178,10 +178,24 @@ class MoonXMCPClient:
             joined = "\n".join(texts).strip()
             if joined:
                 try:
-                    return json.loads(joined)
+                    parsed = json.loads(joined)
+                    if res.get("isError") and isinstance(parsed, dict):
+                        parsed["isError"] = True
+                    return parsed
                 except json.JSONDecodeError:
                     return {"raw_text": joined, "isError": res.get("isError", False)}
         return res
+
+    @staticmethod
+    def is_error(res) -> bool:
+        if not isinstance(res, dict):
+            return False
+        if res.get("isError"):
+            return True
+        if res.get("error") or res.get("success") is False:
+            return True
+        raw = str(res.get("raw_text", "")).lower()
+        return any(w in raw for w in ("error", "invalid", "failed", "not found", "unauthorized"))
 
     def map_and_call(self, tool_name: str, canonical_args: dict):
         """
@@ -226,6 +240,8 @@ class MoonXMCPClient:
                     if cand.lower() in lower_map:
                         matched_key = lower_map[cand.lower()]
                         break
+            if matched_key is None:
+                print(f"[MCP {tool_name}] ⚠️ paramètre '{canon_k}' absent du schéma MoonX -> ignoré (schéma : {list(props.keys())})", flush=True)
             if matched_key is not None:
                 # Ajuster le format du symbole selon la description du schéma si besoin
                 p_info = props.get(matched_key, {})
@@ -570,6 +586,62 @@ def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     return r15, r4h, last_px
 
 
+def apply_tp_sl(client: MoonXMCPClient, coin: str, pos_id, side_int: int, entry_px: float,
+                tp_px: float, sl_px: float, sl_roi_signed: float, tp_roi_pct: float, label: str) -> bool:
+    """
+    Pose / met à jour TP & SL d'une position MoonX, puis VÉRIFIE en relisant l'état réel.
+    sl_roi_signed : ROI visé pour le SL (ex: -50 = perte -50%, 0 = BE, +50 = profit verrouillé).
+    Envoie TOUJOURS les prix absolus (indispensable pour le trailing) + les pourcentages quand le SL est négatif.
+    Retourne True si MoonX affiche bien le nouveau SL, sinon alerte Telegram.
+    """
+    args = {
+        "symbol": coin,
+        "positionId": pos_id,
+        "takeProfitPrice": tp_px,
+        "stopLossPrice": sl_px,
+        "takeProfitGainPercent": tp_roi_pct,
+        "percentage": 100,
+    }
+    if sl_roi_signed < 0:
+        args["stopLossLossPercent"] = abs(sl_roi_signed)
+
+    schema_props = (client.tools_schema.get("set_futures_tp_sl", {}) or {}).get("properties", {})
+    price_ok = any(k.lower() in ("stoplossprice", "slprice", "stop_loss_price", "stoploss", "sl") for k in schema_props)
+    if not price_ok and sl_roi_signed >= 0:
+        # Schéma uniquement en pourcentages : on exprime le SL verrouillé en "perte négative"
+        args["stopLossLossPercent"] = -sl_roi_signed
+
+    try:
+        res = client.map_and_call("set_futures_tp_sl", args)
+    except Exception as e:
+        tg_send(f"❌ {coin} {label} : set_futures_tp_sl a échoué ({e}). VÉRIFIE MANUELLEMENT TON SL/TP SUR MOONX !")
+        print(f"[{coin}] set_futures_tp_sl exception : {e}", flush=True)
+        return False
+
+    print(f"[{coin}] set_futures_tp_sl réponse : {json.dumps(res, ensure_ascii=False)[:400]}", flush=True)
+    if client.is_error(res):
+        tg_send(f"❌ {coin} {label} : MoonX a refusé le TP/SL → {json.dumps(res, ensure_ascii=False)[:300]}\nVÉRIFIE MANUELLEMENT TON SL/TP !")
+        return False
+
+    # Vérification : relire les TP/SL réels
+    try:
+        time.sleep(1.0)
+        chk = _extract_list(client.call_tool("list_futures_tp_sl_orders", {}))
+        chk += _extract_list(client.call_tool("list_futures_positions", {}))
+        found_sl = 0.0
+        for it in chk:
+            if isinstance(it, dict) and _norm_base_coin(it.get("symbol") or it.get("pair") or it.get("instrument") or it.get("asset")) == coin:
+                v = _parse_float(it, ("stopLossPrice", "slPrice", "stopLoss", "sl", "triggerPrice"), default=0.0)
+                if v > 0:
+                    found_sl = v
+        if found_sl > 0 and abs(found_sl - sl_px) / max(sl_px, 1e-9) > 0.002:
+            tg_send(f"⚠️ {coin} {label} : SL attendu {sl_px:g} mais MoonX affiche {found_sl:g}. Vérifie sur MoonX.")
+            return False
+    except Exception as e:
+        print(f"[{coin}] vérification TP/SL impossible : {e}", flush=True)
+    return True
+
+
 def find_cancel_tool(client: MoonXMCPClient) -> str:
     for cand in (
         "cancel_futures_order",
@@ -762,68 +834,80 @@ def main():
             cur_tp_px = _parse_float(pos, ("takeProfitPrice", "tpPrice", "takeProfit", "tp"), default=0.0)
             pos_id = pos.get("positionId") or pos.get("id")
 
-            # Chercher aussi dans list_futures_tp_sl_orders si non présent directement sur l'objet position
-            if (cur_sl_px <= 0 or cur_tp_px <= 0) and coin in tpsl_by_coin:
-                for t_item in tpsl_by_coin[coin]:
-                    if cur_sl_px <= 0:
-                        cur_sl_px = _parse_float(t_item, ("stopLossPrice", "slPrice", "stopLoss", "triggerPrice"), default=0.0)
-                    if cur_tp_px <= 0:
-                        cur_tp_px = _parse_float(t_item, ("takeProfitPrice", "tpPrice", "takeProfit", "triggerPrice"), default=0.0)
+            # Lire SL/TP actuels : classer chaque ordre TP/SL selon sa position vs prix d'entrée (jamais confondre SL et TP)
+            for t_item in tpsl_by_coin.get(coin, []):
+                cands = []
+                for kk in ("stopLossPrice", "slPrice", "stopLoss", "sl", "takeProfitPrice", "tpPrice", "takeProfit", "tp", "triggerPrice", "price"):
+                    vv = _parse_float(t_item, (kk,), default=0.0)
+                    if vv > 0:
+                        cands.append((kk, vv))
+                for kk, vv in cands:
+                    kl = kk.lower()
+                    if kl in ("stoplossprice", "slprice", "stoploss", "sl"):
+                        is_sl = True
+                    elif kl in ("takeprofitprice", "tpprice", "takeprofit", "tp"):
+                        is_sl = False
+                    else:
+                        typ = json.dumps(t_item, ensure_ascii=False).lower()
+                        if "stop" in typ and "take" not in typ:
+                            is_sl = True
+                        elif "take" in typ and "stop" not in typ:
+                            is_sl = False
+                        else:
+                            is_sl = (vv < entry_px) if side_int == 1 else (vv > entry_px)
+                    if is_sl and cur_sl_px <= 0:
+                        cur_sl_px = vv
+                    elif (not is_sl) and cur_tp_px <= 0:
+                        cur_tp_px = vv
 
             trail = scv4.compute_live_trailing_sl(side_int, entry_px, mkt_px, current_sl=cur_sl_px, p=p)
 
-            # 2.a) Si la position n'a pas encore de TP/SL OU si son SL initial au palier 0 est décalé de > 0.15% par rapport au vrai prix d'entrée MoonX
-            has_tpsl = (cur_sl_px > 0 and cur_tp_px > 0) or (coin in tpsl_by_coin and len(tpsl_by_coin[coin]) > 0)
+            side_lbl = 'LONG' if side_int == 1 else 'SHORT'
+            known_pos = state.setdefault("known_positions", {})
+            if coin not in known_pos:
+                known_pos[coin] = {"entry": entry_px, "ts": now_ts}
+                nt = (f"📥 {coin} : position {side_lbl} détectée @ {entry_px:g} (ordre limite exécuté ou ouverture) | "
+                      f"SL actuel {cur_sl_px:g} | TP actuel {cur_tp_px:g}")
+                actions_log.append(nt)
+                tg_send(("[SIMULATION] " if is_dry else "") + nt)
+            has_tpsl = cur_sl_px > 0 and cur_tp_px > 0
             sl_misaligned = (
                 trail["tier"] == 0
                 and cur_sl_px > 0
                 and abs(cur_sl_px - trail["target_sl_price"]) / entry_px > 0.0015
             )
-            if (not has_tpsl or sl_misaligned) and trail["tier"] == 0:
+            tp_misaligned = cur_tp_px > 0 and abs(cur_tp_px - trail["tp_price"]) / entry_px > 0.0015
+
+            if trail["tier"] == 0 and (not has_tpsl or sl_misaligned or tp_misaligned):
                 msg = (
-                    f"🛡️ {coin} ({'LONG' if side_int==1 else 'SHORT'} @ {entry_px:g}) : "
-                    f"Calibrage TP +300% ({trail['tp_price']:g}) & SL -50% ({trail['target_sl_price']:g} = -1R sur entrée réelle)"
+                    f"🛡️ {coin} ({side_lbl} @ {entry_px:g}) : TP/SL manquant ou décalé -> pose TP +300% ({trail['tp_price']:g}) "
+                    f"& SL -50% ({trail['target_sl_price']:g}) [actuel SL={cur_sl_px:g} TP={cur_tp_px:g}]"
                 )
                 print(msg, flush=True)
                 actions_log.append(msg)
                 if not is_dry:
-                    client.map_and_call(
-                        "set_futures_tp_sl",
-                        {
-                            "symbol": coin,
-                            "positionId": pos_id,
-                            "takeProfitGainPercent": tp_roi_pct,
-                            "stopLossLossPercent": sl_roi_pct,
-                            "takeProfitPrice": trail["tp_price"],
-                            "stopLossPrice": trail["target_sl_price"],
-                            "percentage": 100,
-                        },
-                    )
-            # 2.b) Si un palier de Trailing SL supérieur est atteint (+50% -> BE, +100% -> +50%, +150% -> +100%, +200% -> +150%)
+                    ok = apply_tp_sl(client, coin, pos_id, side_int, entry_px, trail["tp_price"],
+                                     trail["target_sl_price"], -sl_roi_pct, tp_roi_pct, "pose TP/SL")
+                    tg_send(f"{'✅' if ok else '⚠️'} {msg}")
+                else:
+                    tg_send(f"[SIMULATION] {msg}")
             elif trail["should_update"]:
                 msg = (
-                    f"🔒 {coin} ({'LONG' if side_int==1 else 'SHORT'} | ROI {trail['roi_cur']:+.1f}%) : "
-                    f"Trailing SL Palier {trail['tier']} -> SL remonté à {trail['target_sl_roi']:+.0f}% ROI ({trail['target_sl_price']:g})"
+                    f"🔒 {coin} ({side_lbl} | ROI {trail['roi_cur']:+.1f}%) : "
+                    f"Trailing palier {trail['tier']} -> SL de {cur_sl_px:g} à {trail['target_sl_price']:g} ({trail['target_sl_roi']:+.0f}% ROI)"
                 )
                 print(msg, flush=True)
                 actions_log.append(msg)
                 if not is_dry:
-                    # stopLossLossPercent négatif ou stopLossPrice direct au prix verrouillé
-                    client.map_and_call(
-                        "set_futures_tp_sl",
-                        {
-                            "symbol": coin,
-                            "positionId": pos_id,
-                            "takeProfitGainPercent": tp_roi_pct,
-                            "takeProfitPrice": trail["tp_price"],
-                            "stopLossPrice": trail["target_sl_price"],
-                            "percentage": 100,
-                        },
-                    )
+                    ok = apply_tp_sl(client, coin, pos_id, side_int, entry_px, trail["tp_price"],
+                                     trail["target_sl_price"], trail["target_sl_roi"], tp_roi_pct, f"trailing palier {trail['tier']}")
+                    tg_send(f"{'✅' if ok else '⚠️'} {msg}")
+                else:
+                    tg_send(f"[SIMULATION] {msg}")
             else:
                 actions_log.append(
-                    f"⏳ {coin} : Position {'LONG' if side_int==1 else 'SHORT'} active @ {entry_px:g} "
-                    f"(Prix {mkt_px:g} | ROI {trail['roi_cur']:+.1f}% | Palier {trail['tier']})"
+                    f"⏳ {coin} : {side_lbl} @ {entry_px:g} (Prix {mkt_px:g} | ROI {trail['roi_cur']:+.1f}% | "
+                    f"Palier {trail['tier']} | SL {cur_sl_px:g} | TP {cur_tp_px:g})"
                 )
             continue
 
@@ -937,21 +1021,8 @@ def main():
                     s_int = 1 if side_str == "long" else -1
                     sl_px = scv4._price_at_roi(s_int, en_px, -sl_roi_pct, lev)
                     tp_px = scv4._price_at_roi(s_int, en_px, tp_roi_pct, lev)
-                try:
-                    client.map_and_call(
-                        "set_futures_tp_sl",
-                        {
-                            "symbol": coin,
-                            "positionId": new_pos_id,
-                            "takeProfitGainPercent": tp_roi_pct,
-                            "stopLossLossPercent": sl_roi_pct,
-                            "takeProfitPrice": tp_px,
-                            "stopLossPrice": sl_px,
-                            "percentage": 100,
-                        },
-                    )
-                except Exception as te:
-                    print(f"[{coin}] Note set_futures_tp_sl après ouverture : {te}", flush=True)
+                s_int_open = 1 if side_str == "long" else -1
+                apply_tp_sl(client, coin, new_pos_id, s_int_open, en_px, tp_px, sl_px, -sl_roi_pct, tp_roi_pct, "ouverture marché")
                 free_margin = max(0.0, free_margin - trade_margin_usdt)
 
             msg = (
@@ -972,7 +1043,7 @@ def main():
             print(msg, flush=True)
             actions_log.append(msg)
             if not is_dry:
-                client.map_and_call(
+                lim_res = client.map_and_call(
                     "open_futures_limit_order",
                     {
                         "symbol": coin,
@@ -988,11 +1059,29 @@ def main():
                         "stopLossPrice": sl_px,
                     },
                 )
+                if client.is_error(lim_res):
+                    tg_send(f"❌ {coin} : ordre limite refusé par MoonX → {json.dumps(lim_res, ensure_ascii=False)[:300]}")
+                else:
+                    tg_send(msg)
                 free_margin = max(0.0, free_margin - trade_margin_usdt)
+            else:
+                tg_send(f"[SIMULATION] {msg}")
+
+    # Nettoyer les positions mémorisées qui ne sont plus ouvertes (pour re-notifier la prochaine entrée)
+    kp = state.get("known_positions", {})
+    for c_old in list(kp.keys()):
+        if c_old not in open_pos_by_coin:
+            kp.pop(c_old, None)
+    state["known_positions"] = kp
 
     save_bot_state(a.state_file, state)
 
-    raw_ov_preview = f"\n🔍 Brut MoonX : {json.dumps(overview, ensure_ascii=False)[:450]}" if is_dry else ""
+    raw_ov_preview = ""
+    if is_dry:
+        sch = client.tools_schema.get("set_futures_tp_sl", {})
+        raw_ov_preview = (
+            f"\n🔍 Schéma MoonX set_futures_tp_sl : {json.dumps(sch, ensure_ascii=False)[:700]}"
+        )
     summary = (
         f"🤖 Run Live CRYPTO V4 ({now_str}){' [DRY-RUN]' if is_dry else ''}\n"
         f"• Capital réalisé MoonX : {total_eq:.2f} USDT (Dispo : {free_margin:.2f} USDT | Engagé : {used_margin:.2f} USDT)\n"

@@ -68,10 +68,14 @@ jobs:
             --params "$EXTRA_PARAMS" \
             --state_file data/live_crypto_v4_state.json
 
-      - name: Sauvegarde de l'état Live (Cooldown SL & Historique notifié)
+      - name: Sauvegarde de l'état Live (Cooldown SL & positions connues)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/live_crypto_v4_state.json || true
-          git diff --cached --quiet || (git pull --rebase origin main && git commit -m "chore(live): état Crypto V4 $(date -u +'%Y-%m-%d %H:%M')" && git push) || echo "État inchangé"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(live): état Crypto V4 $(date -u +'%Y-%m-%d %H:%M')"
+            git pull --rebase origin main || git rebase --abort
+            git push || echo "Push état échoué (non bloquant)"
+          fi
 
