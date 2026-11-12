@@ -983,18 +983,11 @@ def main():
             known_pos = state.setdefault("known_positions", {})
             if coin not in known_pos:
                 known_pos[coin] = {"entry": entry_px, "ts": now_ts}
-                nt = (f"📥 {coin} : position {side_lbl} détectée @ {entry_px:g} (ordre limite exécuté ou ouverture) | "
-                      f"SL actuel {cur_sl_px:g} | TP actuel {cur_tp_px:g} | positionId={pos_id}")
+                sl_txt = f"{cur_sl_px:g}" if cur_sl_px > 0 else "en cours"
+                tp_txt = f"{cur_tp_px:g}" if cur_tp_px > 0 else "en cours"
+                nt = f"📥 {coin} : position {side_lbl} détectée @ {entry_px:g} (ordre limite exécuté ou ouverture) | SL {sl_txt} | TP {tp_txt}"
                 actions_log.append(nt)
                 tg_send(("[SIMULATION] " if is_dry else "") + nt)
-            if (cur_sl_px <= 0 or cur_tp_px <= 0 or not pos_id) and not state.setdefault("raw_dumped", {}).get(coin):
-                state["raw_dumped"][coin] = now_ts
-                tg_send(
-                    f"🔬 DEBUG {coin} champs bruts MoonX (à m'envoyer si SL/TP lu à 0) :\n"
-                    f"POSITION = {json.dumps(pos, ensure_ascii=False)[:900]}\n"
-                    f"TP/SL ORDERS = {json.dumps(tpsl_by_coin.get(coin, []), ensure_ascii=False)[:500]}\n"
-                    f"RAW list_futures_tp_sl_orders = {json.dumps(tpsl_raw, ensure_ascii=False)[:500]}"
-                )
             has_tpsl = cur_sl_px > 0 and cur_tp_px > 0
             # Un SL initial ne doit être recalibré que s'il est PLUS LARGE / PLUS RISQUÉ que -50% (jamais reculer un SL déjà à BE ou meilleur !)
             if cur_sl_px > 0:
