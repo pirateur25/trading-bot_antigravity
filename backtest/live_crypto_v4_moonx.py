@@ -538,11 +538,11 @@ def save_bot_state(path: str, state: dict):
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
-def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, float]:
+def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     """
     Télécharge en TEMPS RÉEL les dernières bougies 5m (jusqu'à la minute actuelle !) depuis les API live
     (Hyperliquid, KuCoin, Bybit — et NON data.binance.vision qui s'arrête la veille à minuit),
-    construit les bougies 15m et 4h *clôturées*, et retourne `(df_15m, df_4h, df_5m, last_price)`.
+    construit les bougies 15m et 4h *clôturées*, et retourne `(df_15m, df_4h, last_price)`.
     """
     binance_sym = dc.ftmo_to_binance(f"{coin}USD")
     now_ms = int(time.time() * 1000)
@@ -583,64 +583,7 @@ def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
     # Ne garder que les bougies 4h complètement clôturées
     r4h = r4h[r4h.index + pd.Timedelta(hours=4) <= now_utc].reset_index()
 
-    return r15, r4h, df_5m, last_px
-
-
-def fetch_position_peak_since_entry(
-    coin: str,
-    side_int: int,
-    entry_px: float,
-    entry_ts_raw,
-    mkt_px: float,
-    df_5m: pd.DataFrame,
-    prev_peak: float = None,
-) -> float:
-    """
-    Calcule le meilleur prix atteint depuis l'ouverture de la position (`createdAt`) jusqu'à l'instant actuel :
-      - SHORT (`side_int == -1`) : prix le PLUS BAS (`min(low)`) depuis l'entrée.
-      - LONG  (`side_int == 1`)  : prix le PLUS HAUT (`max(high)`) depuis l'entrée.
-    Télécharge en priorité les bougies 1m depuis `createdAt` (précision à la minute), avec repli sur `df_5m`.
-    """
-    cands = [float(entry_px), float(mkt_px)]
-    if prev_peak is not None and prev_peak > 0:
-        cands.append(float(prev_peak))
-
-    entry_ts = None
-    if entry_ts_raw:
-        try:
-            entry_ts = pd.to_datetime(entry_ts_raw, utc=True)
-        except Exception:
-            entry_ts = None
-
-    if entry_ts is not None and not pd.isna(entry_ts):
-        binance_sym = dc.ftmo_to_binance(f"{coin}USD")
-        now_ms = int(time.time() * 1000)
-        start_ms = max(int(entry_ts.timestamp() * 1000) - 60_000, now_ms - 5 * 86400 * 1000)
-        df_sub = None
-        for live_fn in (dc.fetch_hyperliquid, dc.fetch_kucoin, dc.fetch_bybit_linear, dc.fetch_bybit):
-            try:
-                rows = live_fn(binance_sym, "1m", start_ms, now_ms)
-                if rows and len(rows) > 0:
-                    cand = dc._frame(rows)
-                    sub = cand[cand["time"] >= entry_ts]
-                    if len(sub) > 0:
-                        df_sub = sub
-                        break
-            except Exception:
-                continue
-
-        if df_sub is None and df_5m is not None and len(df_5m) > 0:
-            sub5 = df_5m[df_5m["time"] >= entry_ts]
-            if len(sub5) > 0:
-                df_sub = sub5
-
-        if df_sub is not None and len(df_sub) > 0:
-            if side_int == 1:
-                cands.append(float(df_sub["high"].max()))
-            else:
-                cands.append(float(df_sub["low"].min()))
-
-    return float(max(cands) if side_int == 1 else min(cands))
+    return r15, r4h, last_px
 
 
 _SL_KEYS = ("stopLossPrice", "slPrice", "stopLoss", "sl", "slTriggerPrice", "stopLossTriggerPrice", "stop_loss_price", "stop_loss")
@@ -898,14 +841,13 @@ def main():
 
     actions_log = []
     cancel_tool = find_cancel_tool(client)
-    newly_opened_keys = set()
 
     # =========================================================================
     # PARCOURS DES INSTRUMENTS ACTIFS (BTC, ETH, AVAX, INJ)
     # =========================================================================
     for coin in coins:
         try:
-            df_15m, df_4h, df_5m, mkt_px = fetch_closed_15m_4h(coin)
+            df_15m, df_4h, mkt_px = fetch_closed_15m_4h(coin)
         except Exception as e:
             msg = f"⚠️ {coin}: impossible de lire les bougies 15m/4h ({e})"
             print(msg, flush=True)
@@ -984,22 +926,8 @@ def main():
             elif mem:
                 bot_sl.pop(coin, None)  # nouvelle position sur ce coin : mémoire obsolète
 
-            # Meilleur prix atteint depuis l'ouverture réelle de la position (`createdAt`) jusqu'à maintenant :
-            # combine bougies 1m/5m depuis l'entrée + mémoire d'état + milestones MoonX (`profitMilestonesFired`)
-            peak_mem = state.setdefault("peak_px", {})
-            peak_key = str(pos_id or coin)
-            prev_peak = float(peak_mem.get(peak_key, 0.0)) if peak_key in peak_mem else None
-            entry_ts_raw = pos.get("createdAt") or pos.get("openTime") or pos.get("openedAt") or pos.get("timestamp")
-            peak_px = fetch_position_peak_since_entry(coin, side_int, entry_px, entry_ts_raw, mkt_px, df_5m, prev_peak=prev_peak)
-            milestones = pos.get("profitMilestonesFired") or []
-            if isinstance(milestones, list):
-                num_ms = [float(x) for x in milestones if isinstance(x, (int, float))]
-                if num_ms:
-                    ms_px = scv4._price_at_roi(side_int, entry_px, max(num_ms), lev)
-                    peak_px = max(peak_px, ms_px) if side_int == 1 else min(peak_px, ms_px)
-            peak_mem[peak_key] = float(peak_px)
-
-            trail = scv4.compute_live_trailing_sl(side_int, entry_px, mkt_px, current_sl=cur_sl_px, p=p, peak_px=peak_px)
+            # Mode check_30m (identique au backtest) : trailing évalué sur le prix au moment du run 30m, et le SL ne recule jamais
+            trail = scv4.compute_live_trailing_sl(side_int, entry_px, mkt_px, current_sl=cur_sl_px, p=p)
 
             side_lbl = 'LONG' if side_int == 1 else 'SHORT'
             known_pos = state.setdefault("known_positions", {})
@@ -1045,7 +973,7 @@ def main():
                     tg_send(f"[SIMULATION] {msg}")
             elif trail["should_update"]:
                 msg = (
-                    f"🔒 {coin} ({side_lbl} | ROI {trail['roi_cur']:+.1f}% | Pic {trail['roi_peak']:+.1f}% @ {trail['peak_px']:g}) : "
+                    f"🔒 {coin} ({side_lbl} | ROI {trail['roi_cur']:+.1f}%) : "
                     f"Trailing palier {trail['tier']} -> SL de {cur_sl_px:g} à {trail['target_sl_price']:g} ({trail['target_sl_roi']:+.0f}% ROI)"
                 )
                 print(msg, flush=True)
@@ -1061,7 +989,7 @@ def main():
             else:
                 actions_log.append(
                     f"⏳ {coin} : {side_lbl} @ {entry_px:g} (Prix {mkt_px:g} | ROI {trail['roi_cur']:+.1f}% | "
-                    f"Pic {trail['roi_peak']:+.1f}% @ {trail['peak_px']:g} | Palier {trail['tier']} | SL {cur_sl_px:g} | TP {cur_tp_px:g})"
+                    f"Palier {trail['tier']} | SL {cur_sl_px:g} | TP {cur_tp_px:g})"
                 )
             continue
 
@@ -1179,9 +1107,6 @@ def main():
                 ok_open = apply_tp_sl(client, coin, new_pos_id, s_int_open, en_px, tp_px, sl_px, -sl_roi_pct, tp_roi_pct, "ouverture marché")
                 if ok_open:
                     state.setdefault("bot_sl", {})[coin] = {"sl": sl_px, "tp": tp_px, "entry": en_px, "pos_id": new_pos_id}
-                pk_new = str(new_pos_id or coin)
-                state.setdefault("peak_px", {})[pk_new] = float(en_px)
-                newly_opened_keys.add(pk_new)
                 free_margin = max(0.0, free_margin - trade_margin_usdt)
 
             msg = (
@@ -1233,8 +1158,7 @@ def main():
             kp.pop(c_old, None)
     state["known_positions"] = kp
     state["raw_dumped"] = {k: v for k, v in state.get("raw_dumped", {}).items() if k in open_pos_by_coin}
-    active_peak_keys = {str(get_position_id(p_o) or c_o) for c_o, p_o in open_pos_by_coin.items()} | set(open_pos_by_coin.keys()) | newly_opened_keys
-    state["peak_px"] = {k: v for k, v in state.get("peak_px", {}).items() if k in active_peak_keys}
+    state.pop("peak_px", None)
 
     save_bot_state(a.state_file, state)
 
