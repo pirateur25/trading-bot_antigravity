@@ -679,11 +679,19 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
     return "\n".join(lines)
 
 
-def compute_live_trailing_sl(side: int, entry: float, px: float, current_sl: float = None, p: dict = None) -> dict:
+def compute_live_trailing_sl(
+    side: int,
+    entry: float,
+    px: float,
+    current_sl: float = None,
+    p: dict = None,
+    peak_px: float = None,
+) -> dict:
     """
     Calcule le palier de Trailing SL atteint en temps réel (Étape 2 du PDF).
+    Prend en compte le meilleur prix atteint depuis l'entrée (`peak_px`) ainsi que le prix actuel (`px`).
     Le SL ne recule jamais ; seul le palier le plus haut atteint s'applique.
-    Retourne dict(roi_cur, tier, target_sl_roi, target_sl_price, tp_price, should_update).
+    Retourne dict(roi_cur, roi_peak, peak_px, tier, target_sl_roi, target_sl_price, tp_price, should_update).
     """
     p = dict(PARAMS if p is None else p)
     lev = float(p.get("leverage", 30.0))
@@ -691,18 +699,24 @@ def compute_live_trailing_sl(side: int, entry: float, px: float, current_sl: flo
     sl_roi_pct = float(p.get("sl_roi_pct", 50.0))
 
     roi_cur = _roi_at_price(side, entry, px, lev)
+    if peak_px is not None and peak_px > 0:
+        eff_peak = max(float(px), float(peak_px)) if side == 1 else min(float(px), float(peak_px))
+    else:
+        eff_peak = float(px)
+
+    roi_peak = max(roi_cur, _roi_at_price(side, entry, eff_peak, lev))
     tp_px = _price_at_roi(side, entry, tp_roi_pct, lev)
     target_sl_roi = -sl_roi_pct
     tier_reached = 0
 
     for idx, (trig_roi, lock_roi) in enumerate(TRAIL_TIERS, 1):
-        if roi_cur >= trig_roi:
+        if roi_peak >= trig_roi:
             tier_reached = idx
             target_sl_roi = lock_roi
 
     target_sl_px = _price_at_roi(side, entry, target_sl_roi, lev)
 
-    # Le SL ne recule jamais : vérifier si le nouveau SL est plus protecteur que current_sl
+    # Le SL ne recule jamais : vérifier si le nouveau SL est strictement plus protecteur que current_sl
     should_update = False
     if tier_reached > 0:
         if current_sl is None or current_sl <= 0:
@@ -714,6 +728,8 @@ def compute_live_trailing_sl(side: int, entry: float, px: float, current_sl: flo
 
     return {
         "roi_cur": float(roi_cur),
+        "roi_peak": float(roi_peak),
+        "peak_px": float(eff_peak),
         "tier": int(tier_reached),
         "target_sl_roi": float(target_sl_roi),
         "target_sl_price": float(target_sl_px),
