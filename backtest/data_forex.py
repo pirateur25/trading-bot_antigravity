@@ -122,10 +122,13 @@ def resolve_data_path(symbol, datadir="data"):
 class PairData:
     """Toutes les données d'une paire + caches (événements MSS, zones FVG HTF, filtres de tendance)."""
 
-    def __init__(self, symbol, datadir="data"):
+    def __init__(self, symbol, datadir="data", df=None):
         self.symbol = symbol
-        path = resolve_data_path(symbol, datadir)
-        df = load_csv(path)
+        if df is None:
+            path = resolve_data_path(symbol, datadir)
+            df = load_csv(path)
+        else:
+            df = df.sort_values("time").reset_index(drop=True)
         self.times = df["time"]
         self.base = make_frame(df, 5, 5)
         self.frames = {"5m": self.base}

@@ -31,6 +31,11 @@ on:
         type: choice
         default: "check_30m"
         options: ["check_30m", "intra"]
+      online:
+        description: "Historique en ligne (oui = téléchargé en mémoire : Binance Futures + Spot avant leur listing, ignore data/ ; non = fichiers data/)"
+        type: choice
+        default: "non"
+        options: ["non", "oui"]
       params:
         description: "Réglages supplémentaires (ex: m15_max_range_pct=1.6;sl_cooldown_hours=2.0;block_same_poi=1)"
         default: ""
@@ -64,10 +69,13 @@ jobs:
           COMPOUND_IN: ${{ inputs.compound }}
           FEE_PCT: ${{ inputs.fee_pct }}
           TRAIL_MODE: ${{ inputs.trail_mode }}
+          ONLINE_IN: ${{ inputs.online }}
           EXTRA_PARAMS: ${{ inputs.params }}
         run: |
           COMP_FLAG=1
           if [ "$COMPOUND_IN" = "non" ]; then COMP_FLAG=0; fi
+          ONLINE_FLAG=0
+          if [ "$ONLINE_IN" = "oui" ]; then ONLINE_FLAG=1; fi
           python backtest/run_crypto_v4.py \
             --symbols "$SYMBOLS" \
             --start "$START" \
@@ -77,6 +85,7 @@ jobs:
             --compound "$COMP_FLAG" \
             --fee_pct "$FEE_PCT" \
             --trail_mode "$TRAIL_MODE" \
+            --online "$ONLINE_FLAG" \
             --params "$EXTRA_PARAMS" \
             --outdir results
 
@@ -84,7 +93,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.csv.gz || true
+          git add data/*.csv.gz data/.crypto_cache_meta.json || true
           git diff --cached --quiet || git commit -m "chore(data): cache historiques 5m Crypto V4 $(date -u +%Y-%m-%d)"
           git push || echo "Pas de nouvelles données à pousser"
 

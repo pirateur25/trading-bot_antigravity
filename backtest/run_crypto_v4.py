@@ -10,6 +10,7 @@ Génère :
   - Envoi automatique sur Telegram (si BOT_TOKEN et CHAT_ID sont définis)
 """
 import argparse
+import json
 import os
 import sys
 
@@ -73,16 +74,64 @@ def tg(text=None, photo=None, document=None):
 
 def ensure_crypto_data(sym_usd: str, datadir: str, start_date: str):
     os.makedirs(datadir, exist_ok=True)
+    req_start = min(start_date, "2022-01-01") if start_date else "2022-01-01"
+    meta_path = os.path.join(datadir, ".crypto_cache_meta.json")
+    meta = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f) or {}
+        except Exception:
+            meta = {}
+
+    existing_p = None
     for ext in (".csv.gz", ".csv"):
         p = os.path.join(datadir, sym_usd + ext)
         if os.path.exists(p):
-            return p
+            existing_p = p
+            break
+
     binance_sym = dc.ftmo_to_binance(sym_usd)
-    dl_start = min(start_date, "2022-01-01") if start_date else "2022-01-01"
-    print(f"[data] Téléchargement {sym_usd} ({binance_sym}) en 5m depuis {dl_start}...", flush=True)
-    df, src = dc.load(binance_sym, "5m", dl_start, source="auto", use_cache=False)
     out = os.path.join(datadir, sym_usd + ".csv.gz")
+
+    if existing_p is not None:
+        head_df = pd.read_csv(existing_p, usecols=["time"], nrows=1, parse_dates=["time"])
+        if len(head_df) > 0:
+            first_ts = head_df["time"].iloc[0]
+            if first_ts.tzinfo is None:
+                first_ts = first_ts.tz_localize("UTC")
+            req_ts = pd.Timestamp(req_start, tz="UTC")
+            already_checked = bool(meta.get(sym_usd) and str(meta[sym_usd]) <= req_start)
+            if first_ts <= req_ts + pd.Timedelta(days=2) or already_checked:
+                return existing_p
+
+            end_str = (first_ts + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            print(f"[data] Complément {sym_usd} ({binance_sym}) de {req_start} à {end_str} (Futures + Spot)...", flush=True)
+            try:
+                prefix_df, src = dc.load_extended(binance_sym, "5m", req_start, end=end_str)
+                cur_df = data_fx.load_csv(existing_p)
+                merged = (
+                    pd.concat([prefix_df[["time", "open", "high", "low", "close", "volume"]],
+                               cur_df[["time", "open", "high", "low", "close", "volume"]]], ignore_index=True)
+                    .drop_duplicates("time", keep="last")
+                    .sort_values("time")
+                    .reset_index(drop=True)
+                )
+                merged.to_csv(out, index=False, compression="gzip")
+                print(f"  ✅ {sym_usd}: complété ({src}) -> {len(merged)} bougies dès {merged['time'].iloc[0]}", flush=True)
+            except Exception as e:
+                print(f"  ⚠️ {sym_usd}: pas de données plus anciennes avant {first_ts} ({e})", flush=True)
+            meta[sym_usd] = req_start
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, sort_keys=True)
+            return out if os.path.exists(out) else existing_p
+
+    print(f"[data] Téléchargement {sym_usd} ({binance_sym}) en 5m depuis {req_start} (Futures + Spot)...", flush=True)
+    df, src = dc.load_extended(binance_sym, "5m", req_start)
     df[["time", "open", "high", "low", "close", "volume"]].to_csv(out, index=False, compression="gzip")
+    meta[sym_usd] = req_start
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
     print(f"  ✅ {sym_usd}: {len(df)} bougies 5m ({src}) -> {out}", flush=True)
     return out
 
@@ -184,6 +233,7 @@ def main():
     ap.add_argument("--fee_pct", type=float, default=0.02, help="Frais par ordre en %% du notionnel (0.02 = 0.02%%, 0 = sans frais)")
     ap.add_argument("--trail_mode", default="check_30m", choices=["check_30m", "intra"])
     ap.add_argument("--params", default="", help="Réglages supplémentaires k=v;k2=v2")
+    ap.add_argument("--online", type=int, default=0, help="1 = télécharge l'historique en mémoire (Binance Futures + complément Spot avant le listing Futures), sans lire/écrire data/")
     ap.add_argument("--outdir", default="results")
     a = ap.parse_args()
 
@@ -220,8 +270,13 @@ def main():
 
     for sym in syms:
         try:
-            ensure_crypto_data(sym, a.datadir, a.start)
-            P = data_fx.PairData(sym, a.datadir)
+            if a.online:
+                df_on, src_on = dc.load_extended(dc.ftmo_to_binance(sym), "5m", a.start or "2017-01-01", a.end or None)
+                print(f"[online] {sym}: {len(df_on)} bougies 5m ({src_on}) du {df_on['time'].iloc[0]} au {df_on['time'].iloc[-1]}", flush=True)
+                P = data_fx.PairData(sym, a.datadir, df=df_on)
+            else:
+                ensure_crypto_data(sym, a.datadir, a.start)
+                P = data_fx.PairData(sym, a.datadir)
         except Exception as e:
             msg = f"❌ {sym} données indisponibles : {e}"
             print(msg, flush=True)

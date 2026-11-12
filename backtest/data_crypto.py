@@ -284,6 +284,68 @@ def load(symbol, interval, start, end=None, source="auto", use_cache=True):
     raise RuntimeError(f"Impossible de récupérer l'historique de {symbol} {interval} (toutes les sources ont échoué).")
 
 
+def load_extended(symbol, interval, start, end=None):
+    """
+    Charge en mémoire (sans rien écrire sur disque) l'historique le plus long possible :
+      1) Binance Futures (data.binance.vision/futures/um) depuis `start`
+      2) complète tout ce qui précède le 1er historique Futures avec les bougies Binance Spot
+      3) si Futures est vide, Spot seul ; si Spot est vide aussi, repli sur `load()` (KuCoin/Bybit/...)
+    Renvoie (DataFrame, description_source). start/end au format 'YYYY-MM-DD' (end exclu).
+    """
+    if interval not in SECONDS:
+        raise ValueError(f"Unité de temps inconnue: {interval}")
+    start_ms = int(_parse_date(start).timestamp() * 1000)
+    end_dt = _parse_date(end) if end else datetime.now(timezone.utc)
+    end_ms = int(end_dt.timestamp() * 1000)
+    if end_ms <= start_ms:
+        raise ValueError("La date de fin doit être après la date de début.")
+
+    def _clip(df):
+        return df[(df["time"] >= pd.Timestamp(start_ms, unit="ms", tz="UTC"))
+                  & (df["time"] < pd.Timestamp(end_ms, unit="ms", tz="UTC"))].reset_index(drop=True)
+
+    print(f"{symbol} {interval}: téléchargement en ligne Binance Futures depuis {start}...", flush=True)
+    fut = None
+    try:
+        rows = fetch_binance_futures(symbol, interval, start_ms, end_ms)
+        if rows:
+            fut = _clip(_frame(rows))
+            if fut.empty:
+                fut = None
+    except Exception as e:
+        print(f"  échec binance_futures: {e}", flush=True)
+
+    first_fut_ms = int(fut["time"].iloc[0].timestamp() * 1000) if fut is not None else end_ms
+    spot = None
+    if first_fut_ms - start_ms > 2 * 86400 * 1000:
+        print(f"{symbol} {interval}: complément Binance Spot de {start} jusqu'au début des Futures...", flush=True)
+        try:
+            rows = fetch_binance_vision(symbol, interval, start_ms, first_fut_ms)
+            if rows:
+                spot = _frame(rows)
+                spot = _clip(spot)
+                spot = spot[spot["time"] < pd.Timestamp(first_fut_ms, unit="ms", tz="UTC")].reset_index(drop=True)
+                if spot.empty:
+                    spot = None
+        except Exception as e:
+            print(f"  échec binance_vision (spot): {e}", flush=True)
+
+    parts = [d for d in (spot, fut) if d is not None]
+    if not parts:
+        print(f"{symbol} {interval}: Binance indisponible -> repli sur les autres sources", flush=True)
+        return load(symbol, interval, start, end, source="auto", use_cache=False)
+
+    df = pd.concat(parts, ignore_index=True).drop_duplicates("time").sort_values("time").reset_index(drop=True)
+    if spot is not None and fut is not None:
+        src = "binance_spot+binance_futures"
+    elif spot is not None:
+        src = "binance_spot"
+    else:
+        src = "binance_futures"
+    print(f"  {len(df)} bougies ({src}), du {df['time'].iloc[0]} au {df['time'].iloc[-1]}", flush=True)
+    return df, src
+
+
 def load_csv(path):
     """Charge un CSV local (colonnes time, open, high, low, close, volume)."""
     df = pd.read_csv(path, parse_dates=["time"])
