@@ -1,7 +1,9 @@
 {
   "notified_trade_ids": [],
   "last_sl_by_coin": {},
-  "active_pois": {},
+  "active_pois": {
+    "AVAX": 8.5866
+  },
   "bot_sl": {
     "BTC": {
       "sl": 75652.98791666665,
