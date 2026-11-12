@@ -1,0 +1,81 @@
+name: Robustesse + Risk Overlay CRYPTO V4
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Cryptos à tester"
+        default: "BTC,ETH,AVAX,INJ"
+      start:
+        description: "Date de début (AAAA-MM-JJ)"
+        default: "2020-01-01"
+      split:
+        description: "Début de la période TEST hors-échantillon (TRAIN = avant)"
+        default: "2024-01-01"
+      run_robustness:
+        description: "Lancer le test de robustesse des paramètres (relance le moteur ~21 variantes, long)"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
+      sims:
+        description: "Tirages Monte-Carlo pour le risk overlay"
+        default: "500"
+      wall_time:
+        description: "Durée max du test de robustesse en minutes"
+        default: "300"
+
+permissions:
+  contents: write
+
+jobs:
+  robustness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: Création du dossier résultats
+        run: mkdir -p results
+
+      - name: Risk overlay (rejoue les trades déjà générés, sizing/positions simultanées, Monte-Carlo)
+        run: |
+          if [ -f results/ALL_CRYPTO_V4_trades.csv ]; then
+            python backtest/risk_overlay_crypto_v4.py \
+              --csv results/ALL_CRYPTO_V4_trades.csv \
+              --split "${{ inputs.split }}" \
+              --sims "${{ inputs.sims }}" \
+              --outdir results
+          else
+            echo "results/ALL_CRYPTO_V4_trades.csv absent : lance d'abord le workflow Backtest CRYPTO V4."
+          fi
+
+      - name: Test de robustesse des paramètres (un paramètre à la fois, TRAIN/TEST)
+        if: ${{ inputs.run_robustness == 'oui' }}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python backtest/robustness_crypto_v4.py \
+            --symbols "${{ inputs.symbols }}" \
+            --start "${{ inputs.start }}" \
+            --split "${{ inputs.split }}" \
+            --wall_time "${{ inputs.wall_time }}" \
+            --outdir results
+
+      - name: Upload des rapports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robustesse-crypto-v4
+          path: |
+            results/RISK_OVERLAY_crypto_v4.txt
+            results/RISK_OVERLAY_crypto_v4_grid.csv
+            results/ROBUSTNESS_crypto_v4.txt
+

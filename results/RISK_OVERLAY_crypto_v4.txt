@@ -1,0 +1,70 @@
+RISK OVERLAY CRYPTO V4 — 4702 trades (2372 TRAIN avant 2024-01-01 / 2330 TEST), risque de base 1.5%, capital 600
+La stratégie n'est pas modifiée : seuls le sizing et le nombre de positions simultanées changent.
+Capital TRAIN et TEST repartent chacun de la même valeur de départ (comparaison de style, pas de continuité).
+
+== 1. RÉFÉRENCE (rejeu avec capital réalisé à l'ouverture)
+FULL  Référence (aucune réduction) | pos. illimitées                                 | final     24,912 | CAGR   72.2% | DDmax  66.2% | Calmar  1.09 | pire6m  -49.4% | mois<0 42.2% | pris 4702 (ignorés 0)
+TRAIN Référence (aucune réduction) | pos. illimitées                                 | final      7,007 | CAGR   84.8% | DDmax  52.7% | Calmar  1.61 | pire6m  -35.4% | mois<0 38.8% | pris 2372 (ignorés 0)
+TEST  Référence (aucune réduction) | pos. illimitées                                 | final      2,132 | CAGR   55.9% | DDmax  66.2% | Calmar  0.85 | pire6m  -49.4% | mois<0 45.7% | pris 2330 (ignorés 0)
+
+== 2. STABILITÉ TRAIN -> TEST sur 84 règles : Spearman Calmar = -0.01 | Spearman (-DDmax) = +0.89
+   (proche de +1 = la hiérarchie des règles se retrouve hors échantillon ; proche de 0 = bruit)
+
+== 2b. RÉFÉRENCES « SE DÉ-LEVER SANS RÈGLE » (risque fixe plus faible, positions illimitées)
+FULL  Référence (aucune réduction) | pos. illimitées                                 | final     24,912 | CAGR   72.2% | DDmax  66.2% | Calmar  1.09 | pire6m  -49.4% | mois<0 42.2% | pris 4702 (ignorés 0)
+FULL  Risque FIXE 0.75% (sans règle) | pos. illimitées                               | final      6,871 | CAGR   42.7% | DDmax  39.7% | Calmar  1.08 | pire6m  -25.9% | mois<0 38.6% | pris 4702 (ignorés 0)
+FULL  Risque FIXE 1.01% (sans règle) | pos. illimitées                               | final     12,024 | CAGR   54.9% | DDmax  50.0% | Calmar  1.10 | pire6m  -34.3% | mois<0 42.2% | pris 4702 (ignorés 0)
+FULL  Risque FIXE 1.24% (sans règle) | pos. illimitées                               | final     18,128 | CAGR   64.4% | DDmax  58.5% | Calmar  1.10 | pire6m  -41.9% | mois<0 42.2% | pris 4702 (ignorés 0)
+
+== 3. TOP 6 RÈGLES CHOISIES SUR TRAIN (puis jugées sur TEST)
+- DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | max 2 pos.
+    TRAIN  final      3,436 | CAGR   54.6% | DDmax  32.6% | Calmar  1.68 | pire6m  -21.8% | mois<0 34.7% | pris 1789 (ignorés 583)
+    TEST   final        784 | CAGR    9.8% | DDmax  41.1% | Calmar  0.24 | pire6m  -30.5% | mois<0 51.4% | pris 1475 (ignorés 855)
+    TEST vs réf. : DDmax 41.1% (réf 66.2%) | Calmar 0.24 (réf 0.85) | CAGR 9.8% (réf 55.9%)
+- DD>=15% -> risque x0.5 (retour à 100% si DD<=7.5%) | max 2 pos.
+    TRAIN  final      2,753 | CAGR   46.3% | DDmax  27.9% | Calmar  1.66 | pire6m  -18.1% | mois<0 34.7% | pris 1789 (ignorés 583)
+    TEST   final        731 | CAGR    7.2% | DDmax  36.3% | Calmar  0.20 | pire6m  -25.6% | mois<0 51.4% | pris 1475 (ignorés 855)
+    TEST vs réf. : DDmax 36.3% (réf 66.2%) | Calmar 0.20 (réf 0.85) | CAGR 7.2% (réf 55.9%)
+- DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | pos. illimitées
+    TRAIN  final      4,975 | CAGR   69.6% | DDmax  43.6% | Calmar  1.60 | pire6m  -26.6% | mois<0 40.8% | pris 2372 (ignorés 0)
+    TEST   final      1,547 | CAGR   39.3% | DDmax  55.2% | Calmar  0.71 | pire6m  -38.2% | mois<0 45.7% | pris 2330 (ignorés 0)
+    TEST vs réf. : DDmax 55.2% (réf 66.2%) | Calmar 0.71 (réf 0.85) | CAGR 39.3% (réf 55.9%)
+- DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | max 4 pos.
+    TRAIN  final      4,975 | CAGR   69.6% | DDmax  43.6% | Calmar  1.60 | pire6m  -26.6% | mois<0 40.8% | pris 2372 (ignorés 0)
+    TEST   final      1,547 | CAGR   39.3% | DDmax  55.2% | Calmar  0.71 | pire6m  -38.2% | mois<0 45.7% | pris 2330 (ignorés 0)
+    TEST vs réf. : DDmax 55.2% (réf 66.2%) | Calmar 0.71 (réf 0.85) | CAGR 39.3% (réf 55.9%)
+- DD>=15% -> risque x0.75 (retour à 100% si DD<=7.5%) | pos. illimitées
+    TRAIN  final      4,956 | CAGR   69.5% | DDmax  44.5% | Calmar  1.56 | pire6m  -26.6% | mois<0 38.8% | pris 2372 (ignorés 0)
+    TEST   final      1,842 | CAGR   48.1% | DDmax  56.8% | Calmar  0.85 | pire6m  -38.4% | mois<0 45.7% | pris 2330 (ignorés 0)
+    TEST vs réf. : DDmax 56.8% (réf 66.2%) | Calmar 0.85 (réf 0.85) | CAGR 48.1% (réf 55.9%)
+- DD>=15% -> risque x0.75 (retour à 100% si DD<=7.5%) | max 4 pos.
+    TRAIN  final      4,956 | CAGR   69.5% | DDmax  44.5% | Calmar  1.56 | pire6m  -26.6% | mois<0 38.8% | pris 2372 (ignorés 0)
+    TEST   final      1,842 | CAGR   48.1% | DDmax  56.8% | Calmar  0.85 | pire6m  -38.4% | mois<0 45.7% | pris 2330 (ignorés 0)
+    TEST vs réf. : DDmax 56.8% (réf 66.2%) | Calmar 0.85 (réf 0.85) | CAGR 48.1% (réf 55.9%)
+
+== 4. MONTE-CARLO (300 historiques synthétiques par rééchantillonnage des 83 mois, tirages identiques pour toutes les règles)
+règle                                                                          | médiane finale | 5e pct finale | DDmax méd. | DDmax 95e pct | P(DD>=50%) | Calmar méd.
+Référence (aucune réduction) | pos. illimitées                                 |         26,361 |         1,168 |      70.4% |         88.5% |      99.7% |       0.98
+Risque FIXE 0.75% (sans règle) | pos. illimitées                               |          7,034 |         1,390 |      42.9% |         60.2% |      25.3% |       0.90
+Risque FIXE 1.01% (sans règle) | pos. illimitées                               |         12,388 |         1,458 |      53.8% |         73.0% |      63.0% |       0.94
+Risque FIXE 1.24% (sans règle) | pos. illimitées                               |         18,854 |         1,378 |      62.4% |         81.9% |      90.7% |       0.96
+DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | max 2 pos.                 |          3,870 |           603 |      54.8% |         75.0% |      66.3% |       0.54
+DD>=15% -> risque x0.5 (retour à 100% si DD<=7.5%) | max 2 pos.                |          2,225 |           575 |      44.0% |         60.9% |      28.0% |       0.44
+DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | pos. illimitées            |         14,695 |         1,377 |      59.6% |         78.5% |      84.7% |       0.92
+DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | max 4 pos.                 |         14,927 |         1,385 |      59.7% |         78.5% |      85.7% |       0.90
+DD>=15% -> risque x0.75 (retour à 100% si DD<=7.5%) | pos. illimitées          |         14,707 |         1,345 |      60.2% |         79.0% |      88.0% |       0.89
+DD>=15% -> risque x0.75 (retour à 100% si DD<=7.5%) | max 4 pos.               |         14,531 |         1,342 |      60.5% |         78.6% |      88.7% |       0.89
+Référence (aucune réduction) | max 3 pos.                                      |         12,167 |           704 |      70.6% |         89.4% |      99.0% |       0.72
+DD>=20% -> risque x0.5 (retour à 100% si DD<=10%) | pos. illimitées            |          6,509 |         1,099 |      50.0% |         64.9% |      50.0% |       0.77
+DD>=20% -> risque x0.5 (retour à 100% si DD<=10%) | max 3 pos.                 |          4,226 |           806 |      49.6% |         66.8% |      48.7% |       0.63
+
+== 5. VERDICT MÉCANIQUE : une règle n'est retenue que si elle bat le MEILLEUR « risque fixe » (même sans règle) en Calmar
+   sur TRAIN, sur TEST et en Monte-Carlo (médiane), sans augmenter le DDmax 95e pct Monte-Carlo vs ce meilleur risque fixe.
+  [non] DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | max 2 pos.  (Calmar TRAIN 1.68/1.61 | TEST 0.24/0.96 | MC 0.54/0.98)
+  [non] DD>=15% -> risque x0.5 (retour à 100% si DD<=7.5%) | max 2 pos.  (Calmar TRAIN 1.66/1.61 | TEST 0.20/0.96 | MC 0.44/0.98)
+  [non] DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | pos. illimitées  (Calmar TRAIN 1.60/1.61 | TEST 0.71/0.96 | MC 0.92/0.98)
+  [non] DD>=10% -> risque x0.75 (retour à 100% si DD<=5%) | max 4 pos.  (Calmar TRAIN 1.60/1.61 | TEST 0.71/0.96 | MC 0.90/0.98)
+  [non] DD>=15% -> risque x0.75 (retour à 100% si DD<=7.5%) | pos. illimitées  (Calmar TRAIN 1.56/1.61 | TEST 0.85/0.96 | MC 0.89/0.98)
+  [non] DD>=15% -> risque x0.75 (retour à 100% si DD<=7.5%) | max 4 pos.  (Calmar TRAIN 1.56/1.61 | TEST 0.85/0.96 | MC 0.89/0.98)
+  => Aucune règle ne bat le simple fait de réduire le risque fixe : une règle de drawdown ne crée pas d'avantage, elle dé-lève seulement.
+     Le levier utile est alors le niveau de risque choisi (risk_pct) selon le drawdown que tu peux supporter.
