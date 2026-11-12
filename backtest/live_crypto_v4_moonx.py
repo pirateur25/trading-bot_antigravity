@@ -588,6 +588,46 @@ def fetch_closed_15m_4h(coin: str) -> tuple[pd.DataFrame, pd.DataFrame, float]:
 
 _SL_KEYS = ("stopLossPrice", "slPrice", "stopLoss", "sl", "slTriggerPrice", "stopLossTriggerPrice", "stop_loss_price", "stop_loss")
 _TP_KEYS = ("takeProfitPrice", "tpPrice", "takeProfit", "tp", "tpTriggerPrice", "takeProfitTriggerPrice", "take_profit_price", "take_profit")
+_SYM_KEYS = ("symbol", "pair", "instrument", "asset", "tokenAddress", "market", "ticker", "coin")
+_POS_ID_REF_KEYS = ("positionId", "position_id", "posId", "pos_id", "position")
+
+
+def _extract_coin(item: dict, pos_id_to_coin: dict = None) -> str:
+    """Identifie la crypto (BTC, ETH, ...) d'un objet MoonX via positionId puis via les champs symbol/tokenAddress/etc."""
+    if not isinstance(item, dict):
+        return ""
+    if pos_id_to_coin:
+        for pk in _POS_ID_REF_KEYS:
+            pv = item.get(pk)
+            if isinstance(pv, dict):
+                pv = get_position_id(pv)
+            if pv not in (None, "", 0) and str(pv) in pos_id_to_coin:
+                return pos_id_to_coin[str(pv)]
+    for sk in _SYM_KEYS:
+        sv = item.get(sk)
+        if sv:
+            c = _norm_base_coin(sv)
+            if c:
+                return c
+    return ""
+
+
+def _item_matches_position(item: dict, coin: str, pos_id=None) -> bool:
+    """Vérifie qu'un ordre TP/SL ou position appartient bien à (coin, pos_id) et jamais à une autre crypto."""
+    if not isinstance(item, dict):
+        return False
+    st_raw = str(item.get("status") or item.get("state") or "").lower()
+    if st_raw in ("cancelled", "canceled", "rejected", "expired", "triggered", "filled", "closed"):
+        return False
+    if pos_id:
+        for pk in _POS_ID_REF_KEYS:
+            pv = item.get(pk)
+            if isinstance(pv, dict):
+                pv = get_position_id(pv)
+            if pv not in (None, "", 0):
+                return str(pv) == str(pos_id)
+    item_c = _extract_coin(item)
+    return bool(item_c and item_c == coin)
 
 
 def get_position_id(pos: dict):
@@ -672,9 +712,9 @@ def apply_tp_sl(client: MoonXMCPClient, coin: str, pos_id, side_int: int, entry_
         chk += _extract_list(client.call_tool("list_futures_positions", {}))
         found_sl = 0.0
         for it in chk:
-            if isinstance(it, dict) and _norm_base_coin(it.get("symbol") or it.get("pair") or it.get("instrument") or it.get("asset")) == coin:
+            if _item_matches_position(it, coin, pos_id):
                 v = _parse_float(it, _SL_KEYS, default=0.0)
-                if v > 0:
+                if v > 0 and entry_px * 0.2 <= v <= entry_px * 5.0:
                     found_sl = v
         if found_sl > 0 and abs(found_sl - sl_px) / max(sl_px, 1e-9) > 0.002:
             tg_send(f"⚠️ {coin} {label} : SL attendu {sl_px:g} mais MoonX affiche {found_sl:g}. Vérifie sur MoonX.")
@@ -777,19 +817,23 @@ def main():
 
     # Indexer par coin (BTC, ETH, AVAX, INJ)
     open_pos_by_coin = {}
+    pos_id_to_coin = {}
     for pos_item in positions_list:
         if not isinstance(pos_item, dict):
             continue
-        c = _norm_base_coin(pos_item.get("symbol") or pos_item.get("pair") or pos_item.get("instrument") or pos_item.get("asset"))
+        c = _extract_coin(pos_item)
         size_val = _parse_float(pos_item, ("size", "quantity", "qty", "amount", "contracts", "margin", "positionAmt"), default=1.0)
         if c and abs(size_val) > 0:
             open_pos_by_coin[c] = pos_item
+            pid = get_position_id(pos_item)
+            if pid:
+                pos_id_to_coin[str(pid)] = c
 
     open_orders_by_coin = {}
     for ord_item in orders_list:
         if not isinstance(ord_item, dict):
             continue
-        c = _norm_base_coin(ord_item.get("symbol") or ord_item.get("pair") or ord_item.get("instrument") or ord_item.get("asset"))
+        c = _extract_coin(ord_item, pos_id_to_coin)
         if c:
             open_orders_by_coin.setdefault(c, []).append(ord_item)
 
@@ -797,7 +841,7 @@ def main():
     for t_item in tpsl_list:
         if not isinstance(t_item, dict):
             continue
-        c = _norm_base_coin(t_item.get("symbol") or t_item.get("pair") or t_item.get("instrument") or t_item.get("asset"))
+        c = _extract_coin(t_item, pos_id_to_coin)
         if c:
             tpsl_by_coin.setdefault(c, []).append(t_item)
 
@@ -877,20 +921,26 @@ def main():
             pos_id = get_position_id(pos)
 
             # Si list_futures_tp_sl_orders({}) était vide, tenter avec positionId / symbol si le schéma l'accepte
+            # IMPORTANT : toujours filtrer par (coin, pos_id) car MoonX peut renvoyer les ordres d'autres cryptos
             if coin not in tpsl_by_coin and pos_id:
                 try:
                     sub_tpsl = _extract_list(client.map_and_call("list_futures_tp_sl_orders", {"symbol": coin, "positionId": pos_id}))
                     if sub_tpsl:
-                        tpsl_by_coin[coin] = sub_tpsl
+                        print(f"[{coin}] TP/SL bruts reçus pour pos_id={pos_id} : {json.dumps(sub_tpsl, ensure_ascii=False)[:400]}", flush=True)
+                        matched_tpsl = [it for it in sub_tpsl if _item_matches_position(it, coin, pos_id)]
+                        if matched_tpsl:
+                            tpsl_by_coin[coin] = matched_tpsl
                 except Exception:
                     pass
 
-            # Lire SL/TP actuels : classer chaque ordre TP/SL selon sa position vs prix d'entrée (jamais confondre SL et TP)
+            # Lire SL/TP actuels : vérifier positionId/symbol ET ordre de grandeur vs entry_px (jamais mélanger BTC et ETH)
             for t_item in tpsl_by_coin.get(coin, []):
+                if not _item_matches_position(t_item, coin, pos_id):
+                    continue
                 cands = []
                 for kk in ("stopLossPrice", "slPrice", "stopLoss", "sl", "takeProfitPrice", "tpPrice", "takeProfit", "tp", "triggerPrice", "price"):
                     vv = _parse_float(t_item, (kk,), default=0.0)
-                    if vv > 0:
+                    if vv > 0 and entry_px * 0.2 <= vv <= entry_px * 5.0:
                         cands.append((kk, vv))
                 for kk, vv in cands:
                     kl = kk.lower()
