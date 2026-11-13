@@ -214,10 +214,10 @@ class MoonXMCPClient:
             "leverage": ["leverage", "lev", "multiplier"],
             "marginMode": ["marginMode", "margin_mode", "mode", "marginType"],
             "price": ["price", "limitPrice", "limit_price", "orderPrice", "entryPrice"],
-            "takeProfitGainPercent": ["takeProfitGainPercent", "tpGainPercent", "take_profit_gain_percent", "tpRoiPercent"],
-            "stopLossLossPercent": ["stopLossLossPercent", "slLossPercent", "stop_loss_loss_percent", "slRoiPercent"],
-            "takeProfitPrice": ["takeProfitPrice", "tpPrice", "take_profit_price", "takeProfit", "tp"],
-            "stopLossPrice": ["stopLossPrice", "slPrice", "stop_loss_price", "stopLoss", "sl"],
+            "takeProfitGainPercent": ["takeProfitGainPercent", "tpGainPercent", "take_profit_gain_percent", "tpRoiPercent", "tpPercent", "takeProfitPercent"],
+            "stopLossLossPercent": ["stopLossLossPercent", "slLossPercent", "stop_loss_loss_percent", "slRoiPercent", "slPercent", "stopLossPercent"],
+            "takeProfitPrice": ["takeProfitPrice", "tpPrice", "take_profit_price", "takeProfit", "tp", "tpTriggerPrice", "takeProfitTriggerPrice"],
+            "stopLossPrice": ["stopLossPrice", "slPrice", "stop_loss_price", "stopLoss", "sl", "slTriggerPrice", "stopLossTriggerPrice"],
             "percentage": ["percentage", "closePercent", "percent", "qtyPercent"],
             "orderId": ["orderId", "order_id", "id"],
             "positionId": ["positionId", "position_id", "id", "posId"],
@@ -271,6 +271,19 @@ class MoonXMCPClient:
             for qk in list(qty_keys):
                 if has_margin_key and qk in mapped and qk not in req_fields:
                     mapped.pop(qk, None)
+            # MoonX précise "Use takeProfitPrice OR takeProfitGainPercent" : éviter d'envoyer les deux en doublon
+            tp_px_keys = {"takeProfitPrice", "tpPrice", "take_profit_price", "takeProfit", "tp", "tpTriggerPrice", "takeProfitTriggerPrice"}
+            tp_pct_keys = {"takeProfitGainPercent", "tpGainPercent", "take_profit_gain_percent", "tpRoiPercent", "tpPercent", "takeProfitPercent"}
+            sl_px_keys = {"stopLossPrice", "slPrice", "stop_loss_price", "stopLoss", "sl", "slTriggerPrice", "stopLossTriggerPrice"}
+            sl_pct_keys = {"stopLossLossPercent", "slLossPercent", "stop_loss_loss_percent", "slRoiPercent", "slPercent", "stopLossPercent"}
+            if any(k in mapped for k in tp_px_keys):
+                for pk in list(tp_pct_keys):
+                    if pk in mapped and pk not in req_fields:
+                        mapped.pop(pk, None)
+            if any(k in mapped for k in sl_px_keys):
+                for pk in list(sl_pct_keys):
+                    if pk in mapped and pk not in req_fields:
+                        mapped.pop(pk, None)
 
         return self.call_tool(tool_name, mapped)
 
@@ -1162,14 +1175,14 @@ def main():
             tg_send(f"{'[SIMULATION] ' if is_dry else ''}{msg}")
 
         elif sig["action"] == "LIMIT":
-            msg = (
-                f"🎯 {coin} : ORDRE LIMITE {side_str.upper()} placé @ {en_px:g} (POI {sig['poi']:g}) | "
-                f"Marge {trade_margin_usdt:.2f} USDT (1R={one_r_usdt:.2f} USDT, {a.risk_pct:g}% de {total_eq:.0f}$) | "
-                f"TP prévu {tp_px:g} (+300%) | SL prévu {sl_px:g} (-50%)"
-            )
-            print(msg, flush=True)
-            actions_log.append(msg)
+            lim_schema = client.tools_schema.get("open_futures_limit_order", {}) or {}
+            lim_props = lim_schema.get("properties", {}) if isinstance(lim_schema, dict) else {}
+            lim_props_low = {str(k).lower() for k in lim_props.keys()}
+            has_lim_tp = any(k in lim_props_low for k in ("takeprofitprice", "tpprice", "take_profit_price", "takeprofit", "tp", "tptriggerprice", "takeprofittriggerprice", "takeprofitgainpercent", "tpgainpercent", "tppercent", "takeprofitpercent"))
+            has_lim_sl = any(k in lim_props_low for k in ("stoplossprice", "slprice", "stop_loss_price", "stoploss", "sl", "sltriggerprice", "stoplosstriggerprice", "stoplosslosspercent", "sllosspercent", "slpercent", "stoplosspercent"))
+
             if not is_dry:
+                print(f"[{coin}] Schéma open_futures_limit_order : {json.dumps(lim_schema, ensure_ascii=False)[:600]}", flush=True)
                 lim_res = client.map_and_call(
                     "open_futures_limit_order",
                     {
@@ -1180,18 +1193,42 @@ def main():
                         "quantity": qty_coins,
                         "leverage": int(lev),
                         "marginMode": margin_mode,
-                        "takeProfitGainPercent": tp_roi_pct,
-                        "stopLossLossPercent": sl_roi_pct,
                         "takeProfitPrice": tp_px,
                         "stopLossPrice": sl_px,
+                        "takeProfitGainPercent": tp_roi_pct,
+                        "stopLossLossPercent": sl_roi_pct,
                     },
                 )
+                print(f"[{coin}] open_futures_limit_order réponse : {json.dumps(lim_res, ensure_ascii=False)[:400]}", flush=True)
                 if client.is_error(lim_res):
                     tg_send(f"❌ {coin} : ordre limite refusé par MoonX → {json.dumps(lim_res, ensure_ascii=False)[:300]}")
                 else:
+                    lim_pos_id = get_position_id(lim_res) if isinstance(lim_res, dict) else None
+                    tpsl_attached = bool(has_lim_tp and has_lim_sl)
+                    if not tpsl_attached and lim_pos_id:
+                        tpsl_attached = apply_tp_sl(client, coin, lim_pos_id, 1 if side_str == "long" else -1, en_px, tp_px, sl_px, -sl_roi_pct, tp_roi_pct, "ordre limite")
+                    note_tpsl = (
+                        f"TP {tp_px:g} (+300%) | SL {sl_px:g} (-50%)"
+                        if tpsl_attached
+                        else f"TP prévu {tp_px:g} (+300%) | SL prévu {sl_px:g} (-50%) ⚠️ (non supporté en amont par MoonX sur ordre limite)"
+                    )
+                    msg = (
+                        f"🎯 {coin} : ORDRE LIMITE {side_str.upper()} placé @ {en_px:g} (POI {sig['poi']:g}) | "
+                        f"Marge {trade_margin_usdt:.2f} USDT (1R={one_r_usdt:.2f} USDT, {a.risk_pct:g}% de {total_eq:.0f}$) | "
+                        f"{note_tpsl}"
+                    )
+                    print(msg, flush=True)
+                    actions_log.append(msg)
                     tg_send(msg)
-                free_margin = max(0.0, free_margin - trade_margin_usdt)
+                    free_margin = max(0.0, free_margin - trade_margin_usdt)
             else:
+                msg = (
+                    f"🎯 {coin} : ORDRE LIMITE {side_str.upper()} placé @ {en_px:g} (POI {sig['poi']:g}) | "
+                    f"Marge {trade_margin_usdt:.2f} USDT (1R={one_r_usdt:.2f} USDT, {a.risk_pct:g}% de {total_eq:.0f}$) | "
+                    f"TP {tp_px:g} (+300%) | SL {sl_px:g} (-50%)"
+                )
+                print(msg, flush=True)
+                actions_log.append(msg)
                 tg_send(f"[SIMULATION] {msg}")
 
     # Nettoyer les positions mémorisées qui ne sont plus ouvertes (pour re-notifier la prochaine entrée)
