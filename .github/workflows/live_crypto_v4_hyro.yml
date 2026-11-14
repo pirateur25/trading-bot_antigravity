@@ -1,8 +1,6 @@
 name: Live CRYPTO V4 — HyroTrader One-Step (Bybit / BloFin / Paper)
 
 on:
-  schedule:
-    - cron: '1,31 * * * *'
   workflow_dispatch:
     inputs:
       exchange:
@@ -24,6 +22,8 @@ on:
       params:
         description: "Surcharges éventuelles (ex: hyro_risk_pct=0.68;hyro_daily_stop_pct=2.2)"
         default: ""
+  repository_dispatch:
+    types: [cron_hyro_30m]
 
 permissions:
   contents: write
