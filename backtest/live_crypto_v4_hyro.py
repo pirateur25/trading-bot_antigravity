@@ -588,6 +588,8 @@ def load_state(path: str, initial_capital: float = 10000.0) -> dict:
                     st.setdefault("days_traded", [])
                     st.setdefault("challenge_passed", False)
                     st.setdefault("symbols", {})
+                    st.setdefault("active_positions", {})
+                    st.setdefault("last_wallet_balance", initial_capital)
                     st.setdefault("dry_run_balance", initial_capital)
                     st.setdefault("dry_run_positions", {})
                     st.setdefault("dry_run_orders", {})
@@ -605,6 +607,8 @@ def load_state(path: str, initial_capital: float = 10000.0) -> dict:
         "days_traded": [],
         "challenge_passed": False,
         "symbols": {},
+        "active_positions": {},
+        "last_wallet_balance": float(initial_capital),
         "dry_run_balance": float(initial_capital),
         "dry_run_positions": {},
         "dry_run_orders": {},
@@ -1036,26 +1040,75 @@ def main():
         return
 
     # ------------------------------------------------------------------
-    # ÉTAPE 2 : Gestion des positions ouvertes (Trailing SL 5 paliers tight_high)
+    # ÉTAPE 2 : Suivi des ouvertures/clôtures & Trailing SL 5 paliers tight_high
     # ------------------------------------------------------------------
     pos_by_sym = {pos["symbol"]: pos for pos in open_positions}
     ord_by_sym = {}
     for o in open_orders:
         ord_by_sym.setdefault(o["symbol"], []).append(o)
 
+    if not is_dry:
+        prev_active = state.get("active_positions", {})
+        prev_bal = float(state.get("last_wallet_balance", wallet_bal))
+
+        # 2a) Détection des positions clôturées sur l'exchange entre deux cycles (TP / SL / Trailing)
+        for sym, old_pos in list(prev_active.items()):
+            if sym not in pos_by_sym:
+                st_sym = state["symbols"].setdefault(sym, {})
+                pnl_delta = wallet_bal - prev_bal
+                if pnl_delta < -1.0:
+                    st_sym["last_sl_ts"] = time.time()
+                    st_sym["last_sl_poi"] = float(old_pos.get("poi", old_pos.get("entry_price", -1.0)))
+                st_sym["active_sl_price"] = 0.0
+                st_sym["active_tp_price"] = 0.0
+                st_sym["peak_px"] = 0.0
+                msg = (
+                    f"🏁 [HYRO LIVE | {sym}] Position {old_pos.get('side', '').upper()} clôturée "
+                    f"(entrée {old_pos.get('entry_price', 0.0):.4f}) | "
+                    f"Solde : {wallet_bal:,.2f} USDT (Équité : {equity:,.2f} USDT)"
+                )
+                print(msg, flush=True)
+                tg_send(msg)
+
+        # 2b) Détection des nouvelles positions ouvertes (ex: ordre LIMIT exécuté entre deux cycles)
+        for sym, pos in pos_by_sym.items():
+            if sym not in prev_active:
+                st_sym = state["symbols"].setdefault(sym, {})
+                if not st_sym.get("just_opened_market"):
+                    msg = (
+                        f"✅ [HYRO LIVE | {sym}] TRADE PRIS (Ordre LIMIT exécuté) : {pos['side'].upper()} @ {pos['entry_price']:.4f}\n"
+                        f"• Taille : {pos['size']:.4f} | SL initial : -50% ROI | TP : +300% ROI"
+                    )
+                    print(msg, flush=True)
+                    tg_send(msg)
+                st_sym.pop("just_opened_market", None)
+
+        state["active_positions"] = {
+            sym: {
+                "side": pos["side"],
+                "entry_price": float(pos["entry_price"]),
+                "size": float(pos["size"]),
+                "poi": float(state["symbols"].get(sym, {}).get("pending_poi", pos["entry_price"])),
+            }
+            for sym, pos in pos_by_sym.items()
+        }
+        state["last_wallet_balance"] = wallet_bal
+
     for sym, pos in pos_by_sym.items():
         st_sym = state["symbols"].setdefault(sym, {})
         prev_peak = float(st_sym.get("peak_px", pos["entry_price"]))
+        known_sl = pos["sl_price"] if pos["sl_price"] > 0 else float(st_sym.get("active_sl_price", 0.0))
+        known_tp = pos["tp_price"] if pos["tp_price"] > 0 else float(st_sym.get("active_tp_price", 0.0))
         trail_info = scv4.compute_live_trailing_sl(
             side=pos["side_int"],
             entry=pos["entry_price"],
             px=pos["mark_price"],
-            current_sl=pos["sl_price"],
+            current_sl=known_sl,
             p=p,
             peak_px=prev_peak,
         )
         st_sym["peak_px"] = trail_info["peak_px"]
-        need_tp = pos["tp_price"] <= 0
+        need_tp = known_tp <= 0 or known_sl <= 0
         if trail_info["should_update"] or need_tp:
             new_sl = trail_info["target_sl_price"] if trail_info["tier"] > 0 else scv4._price_at_roi(pos["side_int"], pos["entry_price"], -float(p["sl_roi_pct"]), float(p["leverage"]))
             new_tp = trail_info["tp_price"]
@@ -1064,12 +1117,15 @@ def main():
                 state["dry_run_positions"][sym]["tp_price"] = new_tp
             else:
                 client.set_tp_sl(sym, sl_price=new_sl, tp_price=new_tp)
-            msg = (
-                f"🔒 [{sym}] Trailing SL mis à jour (Palier {trail_info['tier']} | ROI pic {trail_info['roi_peak']:+.1f}%) : "
-                f"SL -> {new_sl:.4f} ({trail_info['target_sl_roi']:+.0f}% ROI) | TP -> {new_tp:.4f}"
-            )
-            print(msg, flush=True)
-            tg_send(msg)
+            st_sym["active_sl_price"] = new_sl
+            st_sym["active_tp_price"] = new_tp
+            if trail_info["should_update"]:
+                msg = (
+                    f"🔒 [{sym}] Trailing SL mis à jour (Palier {trail_info['tier']} | ROI pic {trail_info['roi_peak']:+.1f}%) : "
+                    f"SL -> {new_sl:.4f} ({trail_info['target_sl_roi']:+.0f}% ROI) | TP -> {new_tp:.4f}"
+                )
+                print(msg, flush=True)
+                tg_send(msg)
 
     # ------------------------------------------------------------------
     # ÉTAPE 3 & 4 : Analyse SMC (15m/4h) & Ouverture calibrée Hyro One-Step
@@ -1177,10 +1233,21 @@ def main():
                 sl_price=sig["sl_price"],
                 tp_price=sig["tp_price"],
             )
+            st_sym["pending_poi"] = float(sig["poi"])
+            st_sym["active_sl_price"] = float(sig["sl_price"])
+            st_sym["active_tp_price"] = float(sig["tp_price"])
+            if sig["action"] == "MARKET":
+                state["active_positions"][sym] = {
+                    "side": sig["side"],
+                    "entry_price": float(entry_px),
+                    "size": float(qty),
+                    "poi": float(sig["poi"]),
+                }
             if utc_day not in state["days_traded"]:
                 state["days_traded"].append(utc_day)
+            action_label = "TRADE PRIS (MARKET)" if sig["action"] == "MARKET" else "ORDRE LIMIT PLACÉ"
             msg = (
-                f"🚀 [HYRO LIVE | {sym}] {sig['action']} {sig['side'].upper()} @ {entry_px:.4f}\n"
+                f"🚀 [HYRO LIVE | {sym}] {action_label} {sig['side'].upper()} @ {entry_px:.4f}\n"
                 f"• SL : {sig['sl_price']:.4f} (-50% ROI) | TP : {sig['tp_price']:.4f} (+300% ROI)\n"
                 f"• Risque 1R : {sizing['one_r_usdt']:.1f} USDT ({sizing['risk_pct']:.2f}% | Marge {sizing['margin_usdt']:.1f}$ x{lev})\n"
                 f"• Règles Hyro : {sizing['reason']}"
