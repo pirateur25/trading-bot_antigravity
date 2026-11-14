@@ -1,0 +1,30 @@
+{
+  "challenge_passed": false,
+  "cloudfront_warned": false,
+  "cur_utc_day": "2026-11-14",
+  "day_locked_reason": "",
+  "day_pnl_history": {
+    "2026-11-14": -0.07010000000000217
+  },
+  "day_start_balance": 10000.0,
+  "days_traded": [],
+  "dry_run_balance": 10000.0,
+  "dry_run_orders": {},
+  "dry_run_positions": {},
+  "hwm_balance": 10000.0,
+  "initial_balance": 10000.0,
+  "symbols": {
+    "AVAXUSDT": {
+      "peak_px": 0.0
+    },
+    "BTCUSDT": {
+      "peak_px": 0.0
+    },
+    "ETHUSDT": {
+      "peak_px": 0.0
+    },
+    "INJUSDT": {
+      "peak_px": 0.0
+    }
+  }
+}
