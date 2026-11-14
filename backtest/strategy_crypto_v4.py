@@ -65,7 +65,8 @@ PARAMS = {
     "hyro_risk_pct": 0.68,          # Règle 1 : Risque de base par trade (0.68% = 68$ sur 10k$ -> TP +6R = +3.98% <= plafond 4.0%/jour)
     "hyro_daily_stop_pct": 2.2,     # Règle 2 : Disjoncteur journalier à -2.2% (coupe toute nouvelle entrée bien avant les -4.0%)
     "hyro_daily_guard": 1,          # Règle 2b: Garde-fou simultané journalier (protège les -4.0% si plusieurs positions sont ouvertes)
-    "hyro_pause_at_cap_pct": 3.6,   # Règle 3 : Pause journalière dès +3.6% de gain net (règle de consistance des 40% = +4.0% max/jour)
+    "hyro_pause_at_cap_pct": 3.6,   # Règle 3 : Pause nouvelles entrées dès +3.6% de gain net (règle de consistance des 40% = +4.0% max/jour)
+    "hyro_hard_day_tp_pct": 0.0,    # 0.0 = laisse courir les trades déjà ouverts (le surplus >4% sert de bouclier contre les -8% statiques)
     "hyro_cap_scale": 1,            # Règle 3b: Écrêtage dynamique du risque pour ne pas gaspiller de profit au-delà de +4.0%/jour
     "hyro_dd_throttle_pct": 2.8,    # Règle 4 : Dès -2.8% de Drawdown (sur -8.0% fixe), réduit le risque par trade
     "hyro_dd_mult": 0.55,           # Multiplicateur de risque en Drawdown (x0.55)

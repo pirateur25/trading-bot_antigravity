@@ -109,8 +109,9 @@ REF_HYRO_OVERLAY = {
     "hyro_risk_pct": 0.68,           # Règle 1 : 0.68% de risque de base par trade (68$ sur 10k$)
     "hyro_daily_stop_pct": 2.2,      # Règle 2 : Disjoncteur journalier à -2.2% + garde-fou simultané
     "hyro_daily_guard": 1,
-    "hyro_pause_at_cap_pct": 3.6,    # Règle 3 : Pause journalière à +3.6% (règle des 40% = +4.0%/j)
-    "hyro_cap_scale": 1,             # Écrête dynamiquement le risque si un TP dépasserait +4.0% sur la journée
+    "hyro_pause_at_cap_pct": 3.6,    # Règle 3a: Pause nouvelles entrées dès +3.6% sur la journée UTC (laisse courir les gagnants déjà ouverts = bouclier DD gratuit !)
+    "hyro_hard_day_tp_pct": 0.0,     # Règle 3b: 0.0 = ne coupe pas les gagnants déjà ouverts (surplus >4% = bouclier contre les -8% statiques)
+    "hyro_cap_scale": 1,             # Règle 3c: Écrête dynamiquement le risque des nouvelles entrées si un TP dépasserait +4.0% sur la journée
     "hyro_dd_throttle_pct": 2.8,     # Règle 4 : Dès -2.8% de DD (depuis initial ou HWM), réduit le risque à x0.55
     "hyro_dd_mult": 0.55,
     "hyro_lock_at_pct": 6.5,         # Règle 5 : Dès +6.5% de profit validé, réduit le risque à x0.55
@@ -646,6 +647,7 @@ def run_hyro_onestep_challenge(
     daily_stop = float(overlay.get("hyro_daily_stop_pct", 2.0)) / 100.0
     use_daily_guard = int(overlay.get("hyro_daily_guard", 1)) != 0
     pause_at_cap = float(overlay.get("hyro_pause_at_cap_pct", 3.8)) / 100.0
+    hard_day_tp = float(overlay.get("hyro_hard_day_tp_pct", 0.0)) / 100.0
     use_cap_scale = int(overlay.get("hyro_cap_scale", 1)) != 0
     dd_thr_pct = float(overlay.get("hyro_dd_throttle_pct", 3.6)) / 100.0
     dd_mult = float(overlay.get("hyro_dd_mult", 0.55))
@@ -769,8 +771,17 @@ def run_hyro_onestep_challenge(
             if risk is None:
                 continue
             pnl = risk * trades[i][2]
+            cur_d_pnl = day_pnl.get(d, 0.0)
+            # Hard Daily Profit Lock : si la journée a déjà atteint le plafond dur (+3.90%), les positions restantes ont été coupées à l'objectif du jour
+            if hard_day_tp > 0.0 and pnl > 0.0:
+                if cur_d_pnl >= hard_day_tp:
+                    pnl = 0.0
+                elif cur_d_pnl + pnl > hard_day_tp:
+                    pnl = hard_day_tp - cur_d_pnl
+                    # Toutes les autres positions ouvertes ce jour-là sont clôturées au même instant (Hard Daily Flatten)
+                    open_r.clear()
             bal += pnl
-            day_pnl[d] = day_pnl.get(d, 0.0) + pnl
+            day_pnl[d] = cur_d_pnl + pnl
             if day_pnl[d] < worst_day_pnl:
                 worst_day_pnl = day_pnl[d]
             if bal > hwm:

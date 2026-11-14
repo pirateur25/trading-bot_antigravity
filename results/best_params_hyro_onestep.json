@@ -5,6 +5,7 @@
     "hyro_daily_stop_pct": 2.2,
     "hyro_dd_mult": 0.55,
     "hyro_dd_throttle_pct": 2.8,
+    "hyro_hard_day_tp_pct": 0.0,
     "hyro_lock_at_pct": 6.5,
     "hyro_lock_mult": 0.55,
     "hyro_max_notional_mult": 2.0,
@@ -84,5 +85,5 @@
     "tp_roi_pct": 300.0,
     "trail_variant": "tight_high"
   },
-  "updated_at": "2026-11-14T20:02:07Z"
+  "updated_at": "2026-11-14T20:30:00Z"
 }

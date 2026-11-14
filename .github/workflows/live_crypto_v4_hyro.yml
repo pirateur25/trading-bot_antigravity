@@ -1,0 +1,81 @@
+name: Live CRYPTO V4 — HyroTrader One-Step (Bybit API)
+
+on:
+  schedule:
+    - cron: '1,31 * * * *'
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environnement Bybit (demo = Challenge HyroTrader Bybit | mainnet = Compte financé | dry_run = Simulation sans clé)"
+        type: choice
+        default: "demo"
+        options: ["demo", "mainnet", "testnet", "dry_run"]
+      symbols:
+        description: "Cryptos tradées"
+        default: "BTC,ETH,AVAX,INJ"
+      initial_capital:
+        description: "Capital initial du challenge Hyro One-Step (USDT)"
+        default: "10000"
+      params:
+        description: "Surcharges éventuelles (ex: hyro_risk_pct=0.68;hyro_daily_stop_pct=2.2)"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-hyro-crypto-v4
+  cancel-in-progress: false
+
+jobs:
+  live_hyro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances
+        run: pip install -r requirements.txt
+
+      - name: Exécution du cycle 30m CRYPTO V4 (5 Règles Hyro One-Step + Trailing 5 paliers)
+        env:
+          BYBIT_API_KEY: ${{ secrets.BYBIT_API_KEY }}
+          BYBIT_API_SECRET: ${{ secrets.BYBIT_API_SECRET }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          ENV_MODE: ${{ inputs.env || 'demo' }}
+          SYMBOLS: ${{ inputs.symbols || 'BTC,ETH,AVAX,INJ' }}
+          INIT_CAP: ${{ inputs.initial_capital || '10000' }}
+          EXTRA_PARAMS: ${{ inputs.params || '' }}
+        run: |
+          python backtest/live_crypto_v4_hyro.py \
+            --env "$ENV_MODE" \
+            --symbols "$SYMBOLS" \
+            --initial_capital "$INIT_CAP" \
+            --params "$EXTRA_PARAMS" \
+            --state_path data/live_hyro_state.json
+
+      - name: Sauvegarde de l'état journalier Hyro One-Step (data/live_hyro_state.json)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin main || true
+            git add data/live_hyro_state.json || true
+            if git diff --cached --quiet; then
+              echo "Aucun changement d'état à sauvegarder."
+              break
+            fi
+            git commit -m "chore(live-hyro): maj etat Hyro One-Step $(date -u +'%Y-%m-%d %H:%M UTC')" || true
+            if git push origin HEAD:main; then
+              echo "État sauvegardé avec succès."
+              break
+            fi
+            sleep 2
+          done
+
