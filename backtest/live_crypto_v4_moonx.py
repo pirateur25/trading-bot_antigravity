@@ -219,7 +219,7 @@ class MoonXMCPClient:
             "takeProfitPrice": ["takeProfitPrice", "tpPrice", "take_profit_price", "takeProfit", "tp", "tpTriggerPrice", "takeProfitTriggerPrice"],
             "stopLossPrice": ["stopLossPrice", "slPrice", "stop_loss_price", "stopLoss", "sl", "slTriggerPrice", "stopLossTriggerPrice"],
             "percentage": ["percentage", "closePercent", "percent", "qtyPercent"],
-            "orderId": ["orderId", "order_id", "id"],
+            "orderId": ["orderId", "order_id", "ordId", "orderID", "id", "_id"],
             "positionId": ["positionId", "position_id", "id", "posId"],
         }
 
@@ -653,11 +653,25 @@ def get_position_id(pos: dict):
             return str(v)
     for k, v in pos.items():
         if str(k).lower().endswith("id") and v not in (None, "", 0) and not isinstance(v, (dict, list, bool)):
-            if "order" in str(k).lower() or "user" in str(k).lower() or "account" in str(k).lower():
+            if "order" in str(k).lower() or "user" in str(k).lower() or "account" in str(k).lower() or "member" in str(k).lower():
                 continue
             return str(v)
-    for k, v in pos.items():
-        if str(k).lower().endswith("id") and v not in (None, "", 0) and not isinstance(v, (dict, list, bool)):
+    return None
+
+
+def get_order_id(order: dict):
+    """Retrouve l'identifiant d'un ordre MoonX (orderId, id, _id, ...)."""
+    if not isinstance(order, dict):
+        return None
+    for k in ("orderId", "order_id", "ordId", "orderID", "id", "_id"):
+        v = order.get(k)
+        if v not in (None, "", 0):
+            return str(v)
+    for k, v in order.items():
+        kl = str(k).lower()
+        if kl.endswith("id") and v not in (None, "", 0) and not isinstance(v, (dict, list, bool)):
+            if any(bad in kl for bad in ("position", "pos", "user", "account", "member")):
+                continue
             return str(v)
     return None
 
@@ -741,16 +755,56 @@ def find_cancel_tool(client: MoonXMCPClient) -> str:
     for cand in (
         "cancel_futures_order",
         "cancel_futures_limit_order",
+        "cancel_limit_order",
         "cancel_order",
         "close_futures_order",
         "delete_futures_order",
+        "cancel_futures_limit",
+        "close_futures_limit_order",
     ):
         if cand in client.tools_schema:
             return cand
     for name in client.tools_schema:
-        if "cancel" in name.lower() and "order" in name.lower():
-            return name
-    return "cancel_futures_order"
+        nl = name.lower()
+        if any(v in nl for v in ("cancel", "delete", "remove")) and ("order" in nl or "limit" in nl):
+            if "tp" not in nl and "sl" not in nl:
+                return name
+    return ""
+
+
+def cancel_resting_order(client: MoonXMCPClient, cancel_tool: str, coin: str, ro: dict, is_dry: bool) -> bool:
+    """Annule un ordre au repos sur MoonX en vérifiant l'ID, le schéma et la réponse."""
+    oid = get_order_id(ro)
+    if is_dry:
+        return True
+    if not oid:
+        msg = f"⚠️ {coin} : impossible d'annuler l'ordre au repos (ID introuvable dans {json.dumps(ro, ensure_ascii=False)[:250]})"
+        print(msg, flush=True)
+        tg_send(msg)
+        return False
+    if not cancel_tool or cancel_tool not in client.tools_schema:
+        msg = f"⚠️ {coin} : aucun outil d'annulation d'ordre trouvé sur MoonX (outils : {', '.join(client.tools_schema.keys())})"
+        print(msg, flush=True)
+        tg_send(msg)
+        return False
+    try:
+        c_schema = client.tools_schema.get(cancel_tool, {}) or {}
+        print(
+            f"[{coin}] Annulation ordre oid={oid} via {cancel_tool} "
+            f"(schéma : {list((c_schema.get('properties') or {}).keys())})",
+            flush=True,
+        )
+        res = client.map_and_call(cancel_tool, {"symbol": coin, "orderId": oid})
+        print(f"[{coin}] {cancel_tool} réponse : {json.dumps(res, ensure_ascii=False)[:400]}", flush=True)
+        if client.is_error(res):
+            tg_send(f"❌ {coin} : échec annulation ordre {oid} → {json.dumps(res, ensure_ascii=False)[:250]}")
+            return False
+        return True
+    except Exception as ce:
+        msg = f"❌ {coin} : exception annulation ordre {oid} ({ce})"
+        print(msg, flush=True)
+        tg_send(msg)
+        return False
 
 
 def main():
@@ -846,6 +900,9 @@ def main():
     for ord_item in orders_list:
         if not isinstance(ord_item, dict):
             continue
+        st_raw = str(ord_item.get("status") or ord_item.get("state") or "").lower()
+        if st_raw in ("cancelled", "canceled", "rejected", "expired", "triggered", "filled", "closed"):
+            continue
         c = _extract_coin(ord_item, pos_id_to_coin)
         if c:
             open_orders_by_coin.setdefault(c, []).append(ord_item)
@@ -919,12 +976,7 @@ def main():
             # Règle PDF : jamais position + ordre au repos en même temps sur le même instrument
             if coin in open_orders_by_coin:
                 for resting in open_orders_by_coin[coin]:
-                    oid = resting.get("orderId") or resting.get("id")
-                    if oid and not is_dry:
-                        try:
-                            client.map_and_call(cancel_tool, {"symbol": coin, "orderId": oid})
-                        except Exception as ce:
-                            print(f"[{coin}] Erreur annulation ordre doublon {oid}: {ce}", flush=True)
+                    cancel_resting_order(client, cancel_tool, coin, resting, is_dry)
 
             raw_side = str(pos.get("side") or pos.get("direction") or pos.get("positionSide") or "LONG").upper()
             side_int = 1 if ("LONG" in raw_side or "BUY" in raw_side) else -1
@@ -1068,13 +1120,13 @@ def main():
 
         resting_orders = open_orders_by_coin.get(coin, [])
         kept_resting = False
+        cancel_failed = False
 
         if resting_orders:
             for ro in resting_orders:
-                oid = ro.get("orderId") or ro.get("id")
                 ro_side_raw = str(ro.get("side") or ro.get("direction") or "").lower()
                 ro_side = "long" if ("long" in ro_side_raw or "buy" in ro_side_raw) else "short"
-                ro_px = _parse_float(ro, ("price", "limitPrice", "orderPrice"), default=0.0)
+                ro_px = _parse_float(ro, ("price", "limitPrice", "orderPrice", "entryPrice"), default=0.0)
 
                 # Garder l'ordre au repos uniquement si la thèse est toujours valide, même direction, et écart <= 0.1%
                 if (
@@ -1086,16 +1138,26 @@ def main():
                     kept_resting = True
                     actions_log.append(f"📌 {coin} : Ordre LIMITE {ro_side.upper()} conservé @ {ro_px:g} (POI {sig['poi']:g})")
                 else:
-                    msg = f"🔄 {coin} : Annulation ordre au repos @ {ro_px:g} ({sig.get('reason', 'ajustement POI > 0.1%')})"
+                    if sig["action"] == "LIMIT":
+                        if sig.get("side") != ro_side:
+                            reason_lbl = f"inversion {ro_side.upper()} -> {sig['side'].upper()}"
+                        else:
+                            reason_lbl = f"ajustement POI > {reprice_tol*100:g}% ({ro_px:g} -> {sig['entry_price']:g})"
+                    else:
+                        reason_lbl = sig.get("reason", f"passage en {sig['action']}")
+                    msg = f"🔄 {coin} : Annulation ordre au repos @ {ro_px:g} ({reason_lbl})"
                     print(msg, flush=True)
                     actions_log.append(msg)
-                    if oid and not is_dry:
-                        try:
-                            client.map_and_call(cancel_tool, {"symbol": coin, "orderId": oid})
-                        except Exception as ce:
-                            print(f"[{coin}] Erreur annulation ordre {oid}: {ce}", flush=True)
+                    if cancel_resting_order(client, cancel_tool, coin, ro, is_dry):
+                        ro_margin = _parse_float(ro, ("margin", "marginUsdt", "lockedMargin", "initialMargin"), default=0.0)
+                        if ro_margin > 0 and not is_dry:
+                            free_margin += ro_margin
+                    else:
+                        cancel_failed = True
 
-        if kept_resting:
+        if kept_resting or cancel_failed:
+            if cancel_failed:
+                print(f"[{coin}] Nouvel ordre bloqué car l'annulation de l'ancien ordre au repos a échoué.", flush=True)
             continue
 
         if sig["action"] == "SKIP":
