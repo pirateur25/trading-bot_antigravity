@@ -1,12 +1,17 @@
-name: Live CRYPTO V4 — HyroTrader One-Step (Bybit API)
+name: Live CRYPTO V4 — HyroTrader One-Step (Bybit / BloFin / Paper)
 
 on:
   schedule:
     - cron: '1,31 * * * *'
   workflow_dispatch:
     inputs:
+      exchange:
+        description: "Exchange HyroTrader (auto = détecte BloFin/Bybit sinon Paper | blofin | bybit | dry_run)"
+        type: choice
+        default: "auto"
+        options: ["auto", "blofin", "bybit", "dry_run"]
       env:
-        description: "Environnement Bybit (demo = Challenge HyroTrader Bybit | mainnet = Compte financé | dry_run = Simulation sans clé)"
+        description: "Environnement (demo = Challenge HyroTrader | mainnet = Compte financé | dry_run = Simulation Live)"
         type: choice
         default: "demo"
         options: ["demo", "mainnet", "testnet", "dry_run"]
@@ -45,14 +50,21 @@ jobs:
         env:
           BYBIT_API_KEY: ${{ secrets.BYBIT_API_KEY }}
           BYBIT_API_SECRET: ${{ secrets.BYBIT_API_SECRET }}
+          BYBIT_PROXY_URL: ${{ secrets.BYBIT_PROXY_URL }}
+          BYBIT_BASE_URL: ${{ secrets.BYBIT_BASE_URL }}
+          BLOFIN_API_KEY: ${{ secrets.BLOFIN_API_KEY }}
+          BLOFIN_API_SECRET: ${{ secrets.BLOFIN_API_SECRET }}
+          BLOFIN_PASSPHRASE: ${{ secrets.BLOFIN_PASSPHRASE }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          EXCHANGE_MODE: ${{ inputs.exchange || 'auto' }}
           ENV_MODE: ${{ inputs.env || 'demo' }}
           SYMBOLS: ${{ inputs.symbols || 'BTC,ETH,AVAX,INJ' }}
           INIT_CAP: ${{ inputs.initial_capital || '10000' }}
           EXTRA_PARAMS: ${{ inputs.params || '' }}
         run: |
           python backtest/live_crypto_v4_hyro.py \
+            --exchange "$EXCHANGE_MODE" \
             --env "$ENV_MODE" \
             --symbols "$SYMBOLS" \
             --initial_capital "$INIT_CAP" \
@@ -78,4 +90,3 @@ jobs:
             fi
             sleep 2
           done
-
