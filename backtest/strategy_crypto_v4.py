@@ -48,25 +48,59 @@ PARAMS = {
     "h4_lookback": 8,           # 8 dernières clôtures 4h
     "h4_thresh": 0.35,          # Seuil biais H4 : > +0.35 haussier, < -0.35 baissier
     "m15_lookback": 16,         # 16 dernières clôtures 15m
-    "m15_min_range_pct": 0.4,   # Range (haut - bas) / prix >= 0.4%
-    "m15_max_range_pct": 1.6,   # Plafond anti-krach M15 : ignore les fenêtres M15 > 1.6% où le SL fixe de 1.667% se fait balayer
-    "sl_cooldown_hours": 2.0,   # Pause (en heures) sur l'instrument après un Stop Loss (-50% ROI)
-    "block_same_poi": 1,        # 1 = interdit de reprendre un POI déjà invalidé par un SL (< 0.15% d'écart)
-    "same_poi_tol_pct": 0.15,   # Tolérance d'identité du POI invalidé (0.15%)
+    "m15_min_range_pct": 0.35,  # Range (haut - bas) / prix >= 0.35% (optimisé Walk-Forward Hyro One-Step)
+    "m15_max_range_pct": 1.40,  # Plafond anti-krach M15 : ignore les fenêtres M15 > 1.40% où le SL fixe de 1.667% se fait balayer
+    "sl_cooldown_hours": 3.0,   # Pause (3.0h optimisée WFA) sur l'instrument après un Stop Loss (-50% ROI)
+    "block_same_poi": 1,        # 1 = interdit de reprendre un POI déjà invalidé par un SL (< 0.22% d'écart)
+    "same_poi_tol_pct": 0.22,   # Tolérance d'identité du POI invalidé (0.22% optimisée WFA)
     "poi_fib": 0.5,             # Retracement 50% (équilibre SMC)
     "mkt_tol_pct": 0.05,        # Entrée au marché si prix <= POI * 1.0005 (0.05%)
     "lim_offset_pct": 0.1,      # Ordre limite à POI * 0.999 (long) / POI * 1.001 (short)
     "reprice_tol_pct": 0.1,     # Remplace l'ordre au repos si écart > 0.1%
     "trail_mode": "check_30m",  # "check_30m" (vérifié au run 30m comme Cubrik) | "intra" (continu sur bougie 5m)
+    "trail_variant": "tight_high",  # "tight_high" (5 paliers WFA dont +250%->+215%) | "standard" (4 paliers PDF) | "lock_5r"
     "fee_pct": 0.02,            # Frais futures par ordre en % du notionnel (0.02% maker/taker moyen MoonX/Binance Futures)
+    # --- LES 5 RÈGLES HYROTRADER ONE-STEP (10 000 $ : Objectif +10%, Jour -4%, Max -8% fixe, 3j min, Consistance 40%/jour) ---
+    "hyro_mode": 1,                 # 1 = active les 5 règles Hyro One-Step et le rapport Challenge 4 Ans ; 0 = mode libre standard
+    "hyro_risk_pct": 0.68,          # Règle 1 : Risque de base par trade (0.68% = 68$ sur 10k$ -> TP +6R = +3.98% <= plafond 4.0%/jour)
+    "hyro_daily_stop_pct": 2.2,     # Règle 2 : Disjoncteur journalier à -2.2% (coupe toute nouvelle entrée bien avant les -4.0%)
+    "hyro_daily_guard": 1,          # Règle 2b: Garde-fou simultané journalier (protège les -4.0% si plusieurs positions sont ouvertes)
+    "hyro_pause_at_cap_pct": 3.6,   # Règle 3 : Pause journalière dès +3.6% de gain net (règle de consistance des 40% = +4.0% max/jour)
+    "hyro_cap_scale": 1,            # Règle 3b: Écrêtage dynamique du risque pour ne pas gaspiller de profit au-delà de +4.0%/jour
+    "hyro_dd_throttle_pct": 2.8,    # Règle 4 : Dès -2.8% de Drawdown (sur -8.0% fixe), réduit le risque par trade
+    "hyro_dd_mult": 0.55,           # Multiplicateur de risque en Drawdown (x0.55)
+    "hyro_lock_at_pct": 6.5,        # Règle 5 : Dès +6.5% de profit validé vers les +10%, réduit le risque pour verrouiller le challenge
+    "hyro_lock_mult": 0.55,          # Multiplicateur de verrouillage de fin de challenge (x0.55)
+    "hyro_max_open_trades": 4,      # Max positions ouvertes simultanées (dans la limite stricte de notionnel <= 2.0x le solde)
+    "hyro_max_notional_mult": 2.0,  # Plafond officiel HyroTrader : exposition notionnelle totale <= 2.0x le solde
 }
 
-TRAIL_TIERS = (
+TRAIL_TIERS_STANDARD = (
     (50.0, 0.0),     # ROI +50%  -> SL au break-even (0% ROI = 0 R)
     (100.0, 50.0),   # ROI +100% -> SL à +50% ROI (+1 R)
     (150.0, 100.0),  # ROI +150% -> SL à +100% ROI (+2 R)
     (200.0, 150.0),  # ROI +200% -> SL à +150% ROI (+3 R)
 )
+
+TRAIL_VARIANTS = {
+    "standard": TRAIL_TIERS_STANDARD,
+    "lock_5r": (
+        (50.0, 0.0),
+        (100.0, 50.0),
+        (150.0, 100.0),
+        (200.0, 150.0),
+        (250.0, 210.0),  # +5R -> +4.2R
+    ),
+    "tight_high": (
+        (50.0, 0.0),     # +1R -> BE (0R)
+        (100.0, 50.0),   # +2R -> +1.0R
+        (150.0, 105.0),  # +3R -> +2.1R
+        (200.0, 160.0),  # +4R -> +3.2R
+        (250.0, 215.0),  # +5R -> +4.3R (verrouille 86% du gain à l'approche du TP +6R)
+    ),
+}
+
+TRAIL_TIERS = TRAIL_VARIANTS["tight_high"]
 
 
 def parse_params(text, base=None):
@@ -132,6 +166,7 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
     lim_off = float(p.get("lim_offset_pct", 0.1)) / 100.0
     reprice_tol = float(p.get("reprice_tol_pct", 0.1)) / 100.0
     trail_mode = str(p.get("trail_mode", "check_30m")).lower()
+    active_trail_tiers = TRAIL_VARIANTS.get(str(p.get("trail_variant", "tight_high")).lower(), TRAIL_TIERS)
 
     use_fee_pct = float(p.get("fee_pct", 0.02)) if fee_pct is None else float(fee_pct)
     fee = use_fee_pct / 100.0
@@ -244,7 +279,7 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
                     elif tier == 1:
                         reason = "BE (0%)"
                     else:
-                        lock_pct = int(TRAIL_TIERS[tier - 1][1])
+                        lock_pct = int(active_trail_tiers[tier - 1][1])
                         reason = f"TRAIL (+{lock_pct}%)"
                 else:
                     xp = float(max(tp, ok_p)) if (side == 1 and k > pos["fill_i"]) else (
@@ -255,7 +290,7 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
             elif trail_mode == "intra":
                 best_px = hk if side == 1 else lk
                 roi_peak = _roi_at_price(side, pos["entry"], best_px, lev)
-                for tier_idx, (trig_roi, lock_roi) in enumerate(TRAIL_TIERS, 1):
+                for tier_idx, (trig_roi, lock_roi) in enumerate(active_trail_tiers, 1):
                     if roi_peak >= trig_roi and tier_idx > pos["tier"]:
                         pos["tier"] = tier_idx
                         pos["sl"] = _price_at_roi(side, pos["entry"], lock_roi, lev)
@@ -305,7 +340,7 @@ def run(pd_, capital=600.0, risk_pct=1.5, fee_pct=None, leverage=30.0, p=None, i
             side = pos["side"]
             en = pos["entry"]
             roi_cur = _roi_at_price(side, en, px, lev)
-            for tier_idx, (trig_roi, lock_roi) in enumerate(TRAIL_TIERS, 1):
+            for tier_idx, (trig_roi, lock_roi) in enumerate(active_trail_tiers, 1):
                 if roi_cur >= trig_roi and tier_idx > pos["tier"]:
                     pos["tier"] = tier_idx
                     pos["sl"] = _price_at_roi(side, en, lock_roi, lev)
@@ -676,6 +711,57 @@ def format_crypto_v4_report(all_trades: pd.DataFrame, per_sym_stats: list, start
             f"{row['max_dd_usdt']:+8.0f}$ ({row['max_dd_pct']:5.1f}%)"
         )
 
+    if int(float(p.get("hyro_mode", 1))) != 0:
+        try:
+            import optimize_hyro_crypto_v4 as ohc
+            raw_list = []
+            for _, row in df.iterrows():
+                t_in = pd.Timestamp(row["entry_time"]).timestamp()
+                t_out = pd.Timestamp(row["exit_time"]).timestamp()
+                if t_out <= t_in:
+                    t_out = t_in + 1.0
+                en = float(row["entry"])
+                isl = float(row["initial_sl"]) if "initial_sl" in row else en * (1.0 - 0.0166667)
+                sl_pct = abs(en - isl) / en if en > 0 else 0.0166667
+                raw_list.append({
+                    "t_in": t_in,
+                    "t_out": t_out,
+                    "symbol": str(row["symbol"]),
+                    "sl_pct": sl_pct,
+                    "r_gross": float(row.get("r_gross", row["r"])),
+                    "r_net_default": float(row["r"]),
+                    "entry_type": str(row.get("entry_type", "LIMIT")),
+                    "reason": str(row.get("reason", "")),
+                })
+            if raw_list:
+                tr_h, ev_h, ts_h, lm_h = ohc.prepare_hyro_events(raw_list, ohc.HYRO_ONESTEP_SPEC)
+                first_t = min(x["t_in"] for x in raw_list)
+                last_t = max(x["t_out"] for x in raw_list)
+                starts_h = []
+                cur_t = first_t + 7 * 86400.0
+                while cur_t + 180.0 * 86400.0 <= last_t:
+                    starts_h.append(cur_t)
+                    cur_t += 4.0 * 86400.0
+                att_h = [
+                    ohc.run_hyro_onestep_challenge(ev_h, ts_h, tr_h, lm_h, s0, p, 180.0, "worst", ohc.HYRO_ONESTEP_SPEC)
+                    for s0 in starts_h
+                ]
+                st_h = ohc.summarize_attempts(att_h, ohc.HYRO_ONESTEP_SPEC["price_usd"])
+                seq_h = ohc.simulate_sequential_campaigns(ev_h, ts_h, tr_h, lm_h, first_t, last_t, p, ohc.HYRO_ONESTEP_SPEC)
+                seq_pass = sum(1 for c in seq_h if c["status"] == "pass")
+                seq_fail = sum(1 for c in seq_h if c["status"] == "fail")
+                lines.extend([
+                    "",
+                    "🏆 5. SIMULATION CHALLENGE HYROTRADER ONE-STEP (10 000 $ — LES 5 RÈGLES ACTIVES) :",
+                    f"  • Règle 1 (Sizing)        : {p.get('hyro_risk_pct', 0.68):g}% / trade | Règle 2 (Stop Jour) : -{p.get('hyro_daily_stop_pct', 2.2):g}% + garde-fou ON",
+                    f"  • Règle 3 (Consistance)   : Pause à +{p.get('hyro_pause_at_cap_pct', 3.7):g}% (plafond 40% = +4.0%/j) | Règle 4 (DD) : -{p.get('hyro_dd_throttle_pct', 3.0):g}% -> x{p.get('hyro_dd_mult', 0.55):g}",
+                    f"  • Règle 5 (Lock & Pos.)   : +{p.get('hyro_lock_at_pct', 6.5):g}% -> x{p.get('hyro_lock_mult', 0.55):g} | Max {int(p.get('hyro_max_open_trades', 4))} pos. (notionnel <= {p.get('hyro_max_notional_mult', 2.0):g}x)",
+                    f"  • Départs glissants ({st_h['n']}) : Réussite {st_h['pass']*100:.1f}% (résolus {st_h['pass_resolved']*100:.1f}%) | Échec {st_h['fail']*100:.1f}% | Médiane {st_h['med_days']:.1f}j | Coût espéré {st_h['exp_cost_usd']:.0f}$",
+                    f"  • Campagnes bout-à-bout   : {seq_pass} challenges VALIDÉS (+10%) contre {seq_fail} échecs ({seq_pass/max(1, seq_pass+seq_fail)*100:.1f}% de réussite résolue)",
+                ])
+        except Exception as e:
+            lines.append(f"\n⚠️ Résumé Hyro One-Step non calculé : {e}")
+
     return "\n".join(lines)
 
 
@@ -709,7 +795,8 @@ def compute_live_trailing_sl(
     target_sl_roi = -sl_roi_pct
     tier_reached = 0
 
-    for idx, (trig_roi, lock_roi) in enumerate(TRAIL_TIERS, 1):
+    active_trail_tiers = TRAIL_VARIANTS.get(str(p.get("trail_variant", "tight_high")).lower(), TRAIL_TIERS)
+    for idx, (trig_roi, lock_roi) in enumerate(active_trail_tiers, 1):
         if roi_peak >= trig_roi:
             tier_reached = idx
             target_sl_roi = lock_roi

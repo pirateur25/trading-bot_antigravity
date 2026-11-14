@@ -31,6 +31,11 @@ on:
         type: choice
         default: "check_30m"
         options: ["check_30m", "intra"]
+      hyro_onestep:
+        description: "Simulation Prop Firm HyroTrader One-Step 4 Ans (5 règles intégrées)"
+        type: choice
+        default: "oui"
+        options: ["oui", "non"]
       online:
         description: "Historique en ligne (oui = téléchargé en mémoire : Binance Futures + Spot avant leur listing, ignore data/ ; non = fichiers data/)"
         type: choice
@@ -88,6 +93,9 @@ jobs:
             --online "$ONLINE_FLAG" \
             --params "$EXTRA_PARAMS" \
             --outdir results
+          if [ "${{ inputs.hyro_onestep }}" = "oui" ]; then
+            python backtest/optimize_hyro_crypto_v4.py --eval_only 1 --sim_start "$START" --outdir results
+          fi
 
       - name: Sauvegarde des données crypto téléchargées dans data/
         run: |

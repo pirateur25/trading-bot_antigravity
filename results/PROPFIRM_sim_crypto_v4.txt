@@ -1,0 +1,116 @@
+COMPARATIF PROP FIRMS CRYPTO V4 — 4702 trades | 465 départs glissants (tous les 5j, horizon 180j)
+Périodes : TRAIN < 2024-01-01 (292 départs) | TEST >= 2024-01-01 (173 départs) | Mode flottant : REALIZED
+
+=== Hyro_Core_1Step_39$ (HyroTrader — 39$) | +10% (jour -3% / max -5% static / 4j min / max 4%/j)
+    API & Actifs : Bybit/BloFin API native (100% compatible bot Python) | Frais 0.020%/0.055% | Trades actifs=4702
+  * risque 0.65% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  40.8% (résolus  40.8%) | échec 59.2% | <=30j 14.4% <=45j 21.9% <=60j 29.8% | médiane 42.6j (p75 62.0j) | coût espéré    96$
+      TEST  : réussite  34.7% (résolus  34.7%) | échec 65.3% | <=30j 15.0% <=45j 23.1% <=60j 29.5% | médiane 32.7j (p75 47.5j) | coût espéré   112$
+  * risque 0.65% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  40.8% (résolus  40.8%) | échec 59.2% | <=30j 14.4% <=45j 21.9% <=60j 29.1% | médiane 42.6j (p75 63.1j) | coût espéré    96$
+      TEST  : réussite  30.6% (résolus  30.8%) | échec 68.8% | <=30j 15.6% <=45j 23.1% <=60j 29.5% | médiane 29.3j (p75 45.0j) | coût espéré   127$
+  * risque 0.65% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  40.4% (résolus  40.5%) | échec 59.2% | <=30j 14.7% <=45j 21.9% <=60j 29.5% | médiane 42.5j (p75 62.0j) | coût espéré    96$
+      TEST  : réussite  34.7% (résolus  34.7%) | échec 65.3% | <=30j 13.9% <=45j 22.5% <=60j 28.9% | médiane 34.0j (p75 47.5j) | coût espéré   112$
+
+=== Hyro_OneStep (HyroTrader — 79$) | +10% (jour -4% / max -8% static / 3j min / max 4%/j)
+    API & Actifs : Bybit/BloFin API native (100% compatible bot Python) | Frais 0.020%/0.055% | Trades actifs=4702
+  * risque 0.65% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  51.4% (résolus  52.6%) | échec 46.2% | <=30j 14.0% <=45j 24.0% <=60j 31.2% | médiane 48.4j (p75 82.0j) | coût espéré   150$
+      TEST  : réussite  54.3% (résolus  54.7%) | échec 45.1% | <=30j 16.8% <=45j 28.3% <=60j 42.2% | médiane 43.6j (p75 56.5j) | coût espéré   145$
+  * risque 0.65% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  51.0% (résolus  52.3%) | échec 46.6% | <=30j 14.0% <=45j 23.3% <=60j 30.8% | médiane 48.4j (p75 82.0j) | coût espéré   151$
+      TEST  : réussite  53.8% (résolus  54.1%) | échec 45.7% | <=30j 17.3% <=45j 29.5% <=60j 41.6% | médiane 42.6j (p75 56.5j) | coût espéré   146$
+  * risque 0.65% | stop-jour -2% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  50.7% (résolus  52.3%) | échec 46.2% | <=30j 15.1% <=45j 22.6% <=60j 31.2% | médiane 49.3j (p75 78.2j) | coût espéré   151$
+      TEST  : réussite  53.8% (résolus  55.4%) | échec 43.4% | <=30j 17.9% <=45j 27.7% <=60j 37.0% | médiane 43.7j (p75 66.3j) | coût espéré   143$
+
+=== Hyro_TwoStep (HyroTrader — 89$) | +10% (jour -5% / max -10% static / 4j min / max 4%/j) -> +5% (jour -5% / max -10% static / 4j min / max 2%/j)
+    API & Actifs : Bybit/BloFin API native (100% compatible bot Python) | Frais 0.020%/0.055% | Trades actifs=4702
+  * risque 0.5% | stop-jour -2% | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  17.8% (résolus  33.3%) | échec 35.6% | <=30j  0.0% <=45j  0.0% <=60j  0.7% | médiane 123.9j (p75 158.7j) | coût espéré   267$
+      TEST  : réussite  20.2% (résolus  30.7%) | échec 45.7% | <=30j  0.6% <=45j  1.7% <=60j  4.0% | médiane 75.2j (p75 97.4j) | coût espéré   290$
+  * risque 0.65% | stop-jour -2.5% | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  17.1% (résolus  26.3%) | échec 47.9% | <=30j  0.3% <=45j  0.7% <=60j  1.7% | médiane 111.0j (p75 133.1j) | coût espéré   338$
+      TEST  : réussite  23.7% (résolus  32.5%) | échec 49.1% | <=30j  1.7% <=45j  2.9% <=60j  8.1% | médiane 67.3j (p75 93.1j) | coût espéré   274$
+  * risque 0.65% | sans stop-jour | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  17.1% (résolus  25.9%) | échec 49.0% | <=30j  0.3% <=45j  0.7% <=60j  1.7% | médiane 104.8j (p75 140.3j) | coût espéré   344$
+      TEST  : réussite  28.3% (résolus  37.4%) | échec 47.4% | <=30j  1.7% <=45j  2.9% <=60j  8.1% | médiane 71.5j (p75 111.3j) | coût espéré   238$
+
+=== E8_One_9pct_88$ (E8 Markets — 88$) | +9% (jour -4% / max -6% static / 0j min)
+    API & Actifs : Serveur MCP E8 (AVAX/INJ levier 2:1) | Frais 0.015%/0.045% | Trades actifs=4702
+  * risque 0.5% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  55.1% (résolus  55.5%) | échec 44.2% | <=30j 24.3% <=45j 34.2% <=60j 41.1% | médiane 33.6j (p75 60.5j) | coût espéré   159$
+      TEST  : réussite  56.6% (résolus  56.6%) | échec 43.4% | <=30j 25.4% <=45j 42.8% <=60j 49.1% | médiane 31.8j (p75 44.0j) | coût espéré   155$
+  * risque 0.5% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  55.1% (résolus  55.5%) | échec 44.2% | <=30j 24.3% <=45j 34.2% <=60j 41.1% | médiane 33.6j (p75 60.5j) | coût espéré   159$
+      TEST  : réussite  56.6% (résolus  56.6%) | échec 43.4% | <=30j 25.4% <=45j 42.8% <=60j 49.1% | médiane 31.8j (p75 44.0j) | coût espéré   155$
+  * risque 0.5% | stop-jour -2% | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  54.8% (résolus  55.2%) | échec 44.5% | <=30j 24.3% <=45j 33.9% <=60j 41.4% | médiane 33.5j (p75 58.6j) | coût espéré   160$
+      TEST  : réussite  52.0% (résolus  52.3%) | échec 47.4% | <=30j 22.5% <=45j 37.0% <=60j 45.1% | médiane 34.3j (p75 46.0j) | coût espéré   168$
+
+=== E8_Pro_8pct_68$ (E8 Markets — 68$) | +8% (jour -2.5% / max -8% static / 4j min / max 2%/j)
+    API & Actifs : Serveur MCP E8 (plafond 2% profit/jour) | Frais 0.015%/0.045% | Trades actifs=4702
+  * risque 0.65% | sans stop-jour | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  37.0% (résolus  62.4%) | échec 22.3% | <=30j  2.1% <=45j  4.8% <=60j 10.6% | médiane 87.1j (p75 131.6j) | coût espéré   109$
+      TEST  : réussite  46.8% (résolus  62.3%) | échec 28.3% | <=30j  7.5% <=45j 13.9% <=60j 23.1% | médiane 60.1j (p75 105.3j) | coût espéré   109$
+  * risque 0.65% | stop-jour -2% | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  37.0% (résolus  62.4%) | échec 22.3% | <=30j  2.1% <=45j  4.8% <=60j 10.6% | médiane 87.1j (p75 131.6j) | coût espéré   109$
+      TEST  : réussite  46.8% (résolus  61.4%) | échec 29.5% | <=30j  7.5% <=45j 13.9% <=60j 23.1% | médiane 60.1j (p75 105.3j) | coût espéré   111$
+  * risque 0.65% | stop-jour -2.5% | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  37.0% (résolus  62.4%) | échec 22.3% | <=30j  2.1% <=45j  4.8% <=60j 10.6% | médiane 87.1j (p75 131.6j) | coût espéré   109$
+      TEST  : réussite  46.8% (résolus  62.3%) | échec 28.3% | <=30j  7.5% <=45j 13.9% <=60j 23.1% | médiane 60.1j (p75 105.3j) | coût espéré   109$
+
+=== Bright_2Step_Bright_87$ (BrightFunded — 87$) | +8% (jour -4% / max -8% static / 5j min) -> +5% (jour -4% / max -8% static / 5j min)
+    API & Actifs : MT5/cTrader requis (sans INJUSD) | Frais 0.024%/0.024% | Trades actifs=3981
+  * risque 0.8% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  51.0% (résolus  51.0%) | échec 49.0% | <=30j 14.0% <=45j 27.7% <=60j 35.3% | médiane 42.0j (p75 67.3j) | coût espéré   170$
+      TEST  : réussite  39.3% (résolus  39.3%) | échec 60.7% | <=30j  9.2% <=45j 20.2% <=60j 28.3% | médiane 43.3j (p75 63.2j) | coût espéré   221$
+  * risque 0.8% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  51.0% (résolus  51.0%) | échec 49.0% | <=30j 14.0% <=45j 27.7% <=60j 35.3% | médiane 42.0j (p75 67.3j) | coût espéré   170$
+      TEST  : réussite  37.0% (résolus  37.0%) | échec 63.0% | <=30j  9.2% <=45j 20.2% <=60j 27.7% | médiane 41.6j (p75 58.7j) | coût espéré   235$
+  * risque 0.8% | stop-jour -2% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  50.7% (résolus  50.9%) | échec 49.0% | <=30j 14.0% <=45j 27.4% <=60j 34.6% | médiane 42.4j (p75 68.4j) | coût espéré   171$
+      TEST  : réussite  41.0% (résolus  41.0%) | échec 59.0% | <=30j  9.8% <=45j 20.8% <=60j 30.1% | médiane 44.2j (p75 60.5j) | coût espéré   212$
+
+=== Bright_2Step_Classic_96$ (BrightFunded — 96$) | +10% (jour -5% / max -10% static / 5j min) -> +5% (jour -5% / max -10% static / 5j min)
+    API & Actifs : MT5/cTrader requis (sans INJUSD) | Frais 0.024%/0.024% | Trades actifs=3981
+  * risque 1% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  51.4% (résolus  51.4%) | échec 48.6% | <=30j 15.8% <=45j 29.8% <=60j 37.0% | médiane 40.3j (p75 61.8j) | coût espéré   187$
+      TEST  : réussite  39.3% (résolus  39.3%) | échec 60.7% | <=30j 11.6% <=45j 22.5% <=60j 29.5% | médiane 41.2j (p75 59.3j) | coût espéré   244$
+  * risque 1% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  51.0% (résolus  51.2%) | échec 48.6% | <=30j 15.8% <=45j 29.5% <=60j 36.3% | médiane 40.5j (p75 62.0j) | coût espéré   187$
+      TEST  : réussite  41.0% (résolus  41.0%) | échec 59.0% | <=30j 11.6% <=45j 23.1% <=60j 31.2% | médiane 41.6j (p75 58.7j) | coût espéré   234$
+  * risque 1% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  50.3% (résolus  50.3%) | échec 49.7% | <=30j 15.4% <=45j 29.5% <=60j 36.3% | médiane 40.0j (p75 61.8j) | coût espéré   191$
+      TEST  : réussite  37.6% (résolus  37.6%) | échec 62.4% | <=30j 11.0% <=45j 22.0% <=60j 28.9% | médiane 40.7j (p75 58.7j) | coût espéré   256$
+
+=== Bright_1Step_Trailing (BrightFunded — 95$) | +10% (jour -3% / max -6% trailing / 5j min)
+    API & Actifs : MT5/cTrader requis (DD glissant 6%, sans INJUSD) | Frais 0.024%/0.024% | Trades actifs=3981
+  * risque 0.65% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  49.0% (résolus  49.0%) | échec 51.0% | <=30j 24.7% <=45j 36.0% <=60j 41.1% | médiane 29.7j (p75 45.4j) | coût espéré   194$
+      TEST  : réussite  30.1% (résolus  30.1%) | échec 69.9% | <=30j 18.5% <=45j 24.9% <=60j 27.7% | médiane 25.0j (p75 34.2j) | coût espéré   316$
+  * risque 0.65% | stop-jour -2% | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TRAIN : réussite  49.0% (résolus  49.0%) | échec 51.0% | <=30j 24.7% <=45j 35.6% <=60j 41.1% | médiane 29.7j (p75 46.3j) | coût espéré   194$
+      TEST  : réussite  31.8% (résolus  31.8%) | échec 68.2% | <=30j 17.9% <=45j 24.3% <=60j 27.7% | médiane 28.5j (p75 41.4j) | coût espéré   299$
+  * risque 0.65% | stop-jour -2% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TRAIN : réussite  49.0% (résolus  49.0%) | échec 51.0% | <=30j 24.7% <=45j 36.0% <=60j 41.1% | médiane 29.7j (p75 45.4j) | coût espéré   194$
+      TEST  : réussite  32.4% (résolus  32.4%) | échec 67.6% | <=30j 17.9% <=45j 24.3% <=60j 27.7% | médiane 27.5j (p75 40.0j) | coût espéré   293$
+
+=== CLASSEMENT FINAL HORS-ÉCHANTILLON (TEST 2024-2026, mode PESSIMISTE flottant + frais réels + consistance)
+  #1 E8_Pro_8pct_68$            ( 68$) | risque 0.65% | sans stop-jour | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TEST : réussite  46.8% (résolus  62.3%) | échec 28.3% | <=30j  7.5% <=45j 13.9% <=60j 23.1% | médiane 60.1j (p75 105.3j) | coût espéré   109$
+  #2 E8_One_9pct_88$            ( 88$) | risque 0.5% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TEST : réussite  56.6% (résolus  56.6%) | échec 43.4% | <=30j 25.4% <=45j 42.8% <=60j 49.1% | médiane 31.8j (p75 44.0j) | coût espéré   155$
+  #3 Hyro_OneStep               ( 79$) | risque 0.65% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | sans verrou
+      TEST : réussite  54.3% (résolus  54.7%) | échec 45.1% | <=30j 16.8% <=45j 28.3% <=60j 42.2% | médiane 43.6j (p75 56.5j) | coût espéré   145$
+  #4 Bright_2Step_Bright_87$    ( 87$) | risque 0.8% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TEST : réussite  39.3% (résolus  39.3%) | échec 60.7% | <=30j  9.2% <=45j 20.2% <=60j 28.3% | médiane 43.3j (p75 63.2j) | coût espéré   221$
+  #5 Bright_2Step_Classic_96$   ( 96$) | risque 1% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TEST : réussite  39.3% (résolus  39.3%) | échec 60.7% | <=30j 11.6% <=45j 22.5% <=60j 29.5% | médiane 41.2j (p75 59.3j) | coût espéré   244$
+  #6 Hyro_TwoStep               ( 89$) | risque 0.5% | stop-jour -2% | sans DD-throttle | garde-fou ON | verrou 70%->x0.55
+      TEST : réussite  20.2% (résolus  30.7%) | échec 45.7% | <=30j  0.6% <=45j  1.7% <=60j  4.0% | médiane 75.2j (p75 97.4j) | coût espéré   290$
+  #7 Hyro_Core_1Step_39$        ( 39$) | risque 0.65% | stop-jour -2.5% | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TEST : réussite  34.7% (résolus  34.7%) | échec 65.3% | <=30j 15.0% <=45j 23.1% <=60j 29.5% | médiane 32.7j (p75 47.5j) | coût espéré   112$
+  #8 Bright_1Step_Trailing      ( 95$) | risque 0.65% | sans stop-jour | DD-throttle 45%->x0.55 | garde-fou ON | verrou 70%->x0.55
+      TEST : réussite  30.1% (résolus  30.1%) | échec 69.9% | <=30j 18.5% <=45j 24.9% <=60j 27.7% | médiane 25.0j (p75 34.2j) | coût espéré   316$
