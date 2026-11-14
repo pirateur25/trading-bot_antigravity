@@ -120,13 +120,32 @@ def summary(sym, strat, st, risk, fee, extra=""):
 def load_params(mod, best, extra):
     p = dict(mod.PARAMS)
     if best and os.path.exists(best):
-        p.update(json.load(open(best)))
+        data = json.load(open(best))
+        if isinstance(data, dict) and isinstance(data.get("params"), dict):
+            p.update(data["params"])
+        elif isinstance(data, dict):
+            for k, v in data.items():
+                if k in p:
+                    p[k] = v
     return mod.parse_params(extra, p) if extra else p
+
+
+def load_profitable_pairs(best, fallback):
+    if best and os.path.exists(best):
+        try:
+            data = json.load(open(best))
+            if isinstance(data, dict):
+                recs = data.get("profitable_pairs") or data.get("_recommended_symbols")
+                if recs:
+                    return {normalize_sym(x) for x in recs}
+        except Exception:
+            pass
+    return {normalize_sym(x) for x in fallback}
 
 
 def run_fvg(P, sym, i0, i1, risk, fee, lev, p):
     sigs = strategy_fvg.signals(P, p, i0, i1)
-    tr, eq, _ = engine_fvg.run(P, sigs, CAPITAL, risk, fee, lev, p["be_rr"], p["ttl"], i0, i1)
+    tr, eq, _ = engine_fvg.run(P, sigs, CAPITAL, risk, fee, lev, p["be_rr"], p["ttl"], i0, i1, p=p)
     return tr, eq
 
 
@@ -155,7 +174,7 @@ def run_ote(P, sym, i0, i1, risk, fee, lev, p):
     df_prep = _OTE(p).prepare(df_full).iloc[i0:i1]
     be = p.get("be_rr", 1000.0)
     tr, eq, _ = engine_ote.run_backtest(df_prep, _OTE(p), capital=CAPITAL, risk_pct=risk, fee_pct=fee, slippage_pct=0.0,
-                                        max_leverage=lev, allow_short=True, be_rr=be, pre_prepared=True)
+                                        max_leverage=lev, allow_short=True, be_rr=be, pre_prepared=True, p=p)
     return tr, eq.ffill().to_numpy()
 
 
@@ -185,7 +204,10 @@ def main():
     ap.add_argument("--risk_fvg", type=float, default=0.75)
     ap.add_argument("--risk_opr", type=float, default=0.5)
     ap.add_argument("--leverage", type=float, default=0.0, help="0 = levier FTMO par actif (realism.py)")
-    ap.add_argument("--mode", default="all", choices=["all", "both", "opr_only", "ote_only", "fvg_only", "crypto_v4"])
+    ap.add_argument("--mode", default="all", choices=[
+        "all", "v2_all", "ote2_only", "fvg2_only", "opr2_only", "otr2_only",
+        "both", "opr_only", "ote_only", "fvg_only", "crypto_v4",
+    ])
     ap.add_argument("--sim_challenge", default="oui")
     ap.add_argument("--ftmo_mode", default="1phase", choices=["1phase", "2phases"])
     ap.add_argument("--use_best_ote", default="oui")
@@ -213,26 +235,41 @@ def main():
         rcv4.main()
         return
 
+    is_v2 = a.mode in ("v2_all", "ote2_only", "fvg2_only", "opr2_only", "otr2_only")
+    default_syms_flag = (a.symbols.strip() == "EURUSD,GBPUSD,USDJPY,NAS100,USA500,US30")
     forex = [normalize_sym(s) for s in a.symbols.split(",") if s.strip()]
     crypto = [normalize_sym(s) for s in a.crypto.split(",") if s.strip()]
-    fvg_skip = {normalize_sym(s) for s in a.fvg_skip.split(",") if s.strip()} if a.mode in ("both", "all") else set()
-    ote_skip = {normalize_sym(s) for s in a.ote_skip.split(",") if s.strip()} if a.mode in ("both", "all") else set()
+    fvg_skip = {normalize_sym(s) for s in a.fvg_skip.split(",") if s.strip()} if a.mode in ("both", "all", "v2_all") else set()
+    ote_skip = {normalize_sym(s) for s in a.ote_skip.split(",") if s.strip()} if a.mode in ("both", "all", "v2_all") else set()
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    p_ote = load_params(strategy_ote, os.path.join(here, "results", "best_params_ote.json") if a.use_best_ote == "oui" else "", a.params_ote)
-    p_fvg = load_params(strategy_fvg, os.path.join(here, "results", "best_params_fvg.json") if a.use_best_fvg == "oui" else "", a.params_fvg)
-    p_opr = load_params(strategy_opr, os.path.join(here, "results", "best_params_opr.json") if a.use_best_opr == "oui" else "", a.params_opr)
 
-    # Si on lance uniquement OPR et que seuls des forex étaient passés par erreur, s'assurer que les indices US sont inclus
-    if a.mode == "opr_only" and not any(s in INDICES_OPR for s in forex):
+    ote_json = os.path.join(here, "results", "best_params_ote2.json" if is_v2 else "best_params_ote.json")
+    fvg_json = os.path.join(here, "results", "best_params_fvg2.json" if is_v2 else "best_params_fvg.json")
+    opr_json = os.path.join(here, "results", "best_params_opr2.json" if is_v2 else "best_params_opr.json")
+
+    p_ote = load_params(strategy_ote, ote_json if a.use_best_ote == "oui" else "", a.params_ote)
+    p_fvg = load_params(strategy_fvg, fvg_json if a.use_best_fvg == "oui" else "", a.params_fvg)
+    p_opr = load_params(strategy_opr, opr_json if a.use_best_opr == "oui" else "", a.params_opr)
+
+    ote2_allowed = load_profitable_pairs(ote_json, ["GBPUSD", "USDJPY"]) if (is_v2 and default_syms_flag) else None
+    fvg2_allowed = load_profitable_pairs(fvg_json, ["EURUSD", "GBPUSD", "USDJPY"]) if (is_v2 and default_syms_flag) else None
+    opr2_allowed = load_profitable_pairs(opr_json, ["USA500", "US30", "NAS100"]) if (is_v2 and default_syms_flag) else None
+
+    # Si on lance uniquement OPR/OPR2 et que seuls des forex étaient passés par erreur, s'assurer que les indices US sont inclus
+    if a.mode in ("opr_only", "opr2_only", "otr2_only") and not any(s in INDICES_OPR for s in forex):
         forex = ["NAS100", "USA500", "US30"]
 
-    tg(f"🚀 Backtest {a.mode} : {', '.join(forex + crypto)} depuis {a.start}\nOTE {a.risk_ote}% | FVG {a.risk_fvg}% | OPR {a.risk_opr}%")
+    ote_label = "OTE2" if is_v2 else "OTE"
+    fvg_label = "FVG2" if is_v2 else "FVG"
+    opr_label = "OPR2" if is_v2 else "OPR"
 
-    if a.mode == "fvg_only":
+    tg(f"🚀 Backtest {a.mode} : {', '.join(forex + crypto)} depuis {a.start}\n{ote_label} {a.risk_ote}% | {fvg_label} {a.risk_fvg}% | {opr_label} {a.risk_opr}%")
+
+    if a.mode in ("fvg_only", "fvg2_only"):
         todo = [("FVG", a.risk_fvg, run_fvg, p_fvg)]
-    elif a.mode == "ote_only":
+    elif a.mode in ("ote_only", "ote2_only"):
         todo = [("OTE", a.risk_ote, run_ote, p_ote)]
-    elif a.mode == "opr_only":
+    elif a.mode in ("opr_only", "opr2_only", "otr2_only"):
         todo = [("OPR", a.risk_opr, run_opr, p_opr)]
     elif a.mode == "both":
         todo = [("FVG", a.risk_fvg, run_fvg, p_fvg), ("OTE", a.risk_ote, run_ote, p_ote)]
@@ -260,16 +297,23 @@ def main():
         for name, risk, fn, p in todo:
             if name == "FVG" and (sym in fvg_skip or (sym in crypto and "CRYPTO" in fvg_skip)):
                 continue
+            if name == "FVG" and fvg2_allowed is not None and sym not in fvg2_allowed:
+                continue
             if name == "OTE" and sym in ote_skip:
                 continue
-            if name == "OPR" and sym not in INDICES_OPR and a.mode in ("all", "opr_only"):
+            if name == "OTE" and ote2_allowed is not None and sym not in ote2_allowed:
                 continue
+            if name == "OPR" and sym not in INDICES_OPR and a.mode in ("all", "v2_all", "opr_only", "opr2_only", "otr2_only"):
+                continue
+            if name == "OPR" and opr2_allowed is not None and sym not in opr2_allowed:
+                continue
+            disp_name = f"{name}2.0" if is_v2 else name
             try:
                 tr, eq = fn(P, sym, i0, i1, risk, fee, lev, p)
                 st = stats_of(tr, eq, risk_pct=risk)
-                txt = summary(sym, name, st, risk, fee)
+                txt = summary(sym, disp_name, st, risk, fee)
                 print(txt, flush=True)
-                recap.append(f"{sym} {name}: {st['return_pct']:+.1f}% | {st['trades']}t | {st['avg_r']:+.2f}R | DD {st['max_dd_pct']:.1f}%")
+                recap.append(f"{sym} {disp_name}: {st['return_pct']:+.1f}% | {st['trades']}t | {st['avg_r']:+.2f}R | DD {st['max_dd_pct']:.1f}%")
                 if name == "OPR" and st.get("by_setup"):
                     setup_parts = []
                     for sname in strategy_opr.SETUP_ORDER:

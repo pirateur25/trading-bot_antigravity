@@ -23,6 +23,7 @@
 
 import numpy as np
 import pandas as pd
+import v2_common
 
 try:                                   # Numba (si installé) accélère fortement le MSS ; sinon le même code tourne en Python pur
     from numba import njit as _njit
@@ -79,9 +80,26 @@ PARAMS = {
     "be_rr": 1000.0,            # break-even : SL placé au prix d'entrée dès que le gain atteint X fois le risque (1000 = désactivé)
     "session_start": 0,         # heures UTC d'entrée autorisées [start, end)
     "session_end": 24,
+    # --- OTE 2.0 (améliorations Crypto V4 : Trailing R, Biais H4 + M15, Fenêtre Volatilité, Cooldown SL, Anti-Repeat POI) ---
+    **v2_common.V2_DEFAULT_PARAMS,
 }
 
 ENGINE = {"allow_short": True, "max_bars": None}
+
+
+def parse_params(text, base=None):
+    p = dict(PARAMS if base is None else base)
+    if not text:
+        return p
+    for item in str(text).replace(",", ";").split(";"):
+        if "=" not in item:
+            continue
+        k, v = [x.strip() for x in item.split("=", 1)]
+        if k not in p or v == "":
+            continue
+        ref = p[k]
+        p[k] = int(float(v)) if isinstance(ref, int) else (float(v) if isinstance(ref, float) else v)
+    return p
 
 TF_MIN = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 NS_MIN = 60 * 10**9
@@ -726,7 +744,7 @@ def prepare(df):
     dropped = [tf for tf in _csv(p["conf_tfs"]) if TF_MIN[tf] < base_min]
     if dropped and not quiet:
         print(f"Unité de base {base_min} min : confirmations {', '.join(dropped)} ignorées (trop fines).")
-    need = {p["trend_tf"], "15m", *_csv(p["range_tfs"]), *_csv(p["conf_tfs"])}
+    need = {p["trend_tf"], "4h", "1h", "15m", *_csv(p["range_tfs"]), *_csv(p["conf_tfs"])}
     F = {}
     for tf in need:
         if TF_MIN[tf] >= base_min:
@@ -736,6 +754,15 @@ def prepare(df):
             F[tf] = entry["frames"][tf]
             add_indicators(F[tf], p, tf)
     jm = entry["jm"]
+
+    v2_st = None
+    if "4h" in entry["frames"] and "15m" in entry["frames"] and "1h" in entry["frames"]:
+        v2_st = v2_common.compute_h4_m15_state(
+            B["close_ns"], entry["frames"]["4h"], entry["frames"]["15m"], entry["frames"]["1h"],
+            h4_lookback=int(p.get("h4_lookback", 8)),
+            m15_lookback=int(p.get("m15_lookback", 16)),
+            cache_dict=entry["cache"],
+        )
 
     setups = []
     for sign, side, name in ((1, -1, "short"), (-1, 1, "long")):
@@ -761,11 +788,19 @@ def prepare(df):
     sig_info = np.array([None] * nb, dtype=object)
     for i, side, en, otype, sl, tp, code, info in sorted(setups, key=lambda x: x[0]):
         if sig_side[i] == 0:
+            if v2_st is not None and not v2_common.pass_v2_entry_filters(i, side, v2_st, p):
+                continue
             sig_side[i], sig_entry[i], sig_otype[i], sig_sl[i], sig_tp[i], sig_code[i], sig_info[i] = side, en, otype, sl, tp, code, info
     df["sig_side"], df["sig_entry"], df["sig_otype"], df["sig_sl"], df["sig_tp"], df["sig_code"], df["sig_info"] = (
         sig_side, sig_entry, sig_otype, sig_sl, sig_tp, sig_code, sig_info
     )
     df["sig_ttl"] = int(p.get("ttl", 96) or 0)
+    df["close_ns"] = B["close_ns"]
+    if v2_st is not None:
+        df["v2_biais_h4"] = v2_st["biais_h4"]
+        df["v2_mom_m15"] = v2_st["mom_m15"]
+        df["v2_rng_m15_atr"] = v2_st["rng_m15_atr"]
+        df["v2_is_30m"] = v2_st["is_30m_close"]
     return df
 
 

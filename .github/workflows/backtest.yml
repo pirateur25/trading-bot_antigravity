@@ -28,10 +28,10 @@ on:
         description: "Levier maximum (Swing FTMO = 30 forex/indices, 2 crypto)"
         default: "30"
       mode:
-        description: "Stratégies à lancer"
+        description: "Stratégies à lancer (v2_all = OTE2.0 + FVG2.0 + OPR2.0 sur leurs actifs rentables)"
         type: choice
-        default: "all"
-        options: ["all", "crypto_v4", "opr_only", "both", "ote_only", "fvg_only"]
+        default: "v2_all"
+        options: ["v2_all", "ote2_only", "fvg2_only", "opr2_only", "all", "crypto_v4", "opr_only", "both", "ote_only", "fvg_only"]
       sim_challenge:
         description: "Simuler le challenge FTMO ?"
         type: choice

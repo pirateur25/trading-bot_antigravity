@@ -3,13 +3,21 @@ import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
 import native
+import v2_common
 
 
-def run(pd_, sigs, capital=10000.0, risk_pct=1.0, fee_pct=0.005, leverage=50.0, be_rr=0.0, ttl=96, a=0, b=None, noentry=None, fexit=None):
+def run(pd_, sigs, capital=10000.0, risk_pct=1.0, fee_pct=0.005, leverage=50.0, be_rr=0.0, ttl=96, a=0, b=None, noentry=None, fexit=None, p=None):
     """Retourne (trades DataFrame, equity ndarray sur [a,b), stats). Un seul trade à la fois, les deux sens sont simulés ensemble."""
     b = pd_.n if b is None else b
     fee = fee_pct / 100.0
-    res = []
+    if p is not None and (
+        str(p.get("trail_mode", "be_only")) not in ("none", "be_only")
+        or str(p.get("trail_check", "bar")) != "bar"
+        or float(p.get("sl_cooldown_hours", 0.0) or 0.0) > 0.0
+        or int(p.get("block_same_poi", 0) or 0) == 1
+        or int(p.get("cancel_on_flip", 0) or 0) == 1
+    ):
+        return _run_v2(pd_, sigs, capital, risk_pct, fee, leverage, be_rr, ttl, a, b, noentry, fexit, p)
     # Le moteur C travaille en monde 'short'. Pour un mélange long/short on enchaîne les signaux dans l'ordre du temps :
     # on simule d'abord chaque monde séparément pour obtenir les occupations, puis on retient le premier signal libre.
     # Simplification exacte : les trades s'excluent mutuellement => on simule en séquence sur une liste fusionnée.
@@ -71,7 +79,154 @@ def _mixed(pd_, sigs, worlds, capital, risk_pct, fee, lev, be_rr, ttl, noentry=N
     return tr, eq
 
 
-NAMES = ["SL", "TP", "BE", "END", "WE"]
+NAMES = ["SL", "TP", "BE", "END", "WE", "TRAIL"]
+
+
+def _run_v2(pd_, sigs, capital, risk_pct, fee, lev, be_rr, ttl, a, b, noentry=None, fexit=None, p=None):
+    """Simulation FVG 2.0 avec Trailing multi-paliers R, Cooldown post-SL, Anti-Repeat Zone/POI et annulation 30m sur flip."""
+    B = pd_.base
+    n = pd_.n
+    if not sigs:
+        eq = np.full(n, float(capital))
+        return pd.DataFrame(), eq[a:b], stats(pd.DataFrame(), eq[a:b], capital)
+
+    worlds = {1: (B["o"], B["h"], B["l"], B["c"]), -1: (-B["o"], -B["l"], -B["h"], -B["c"])}
+    close_ns = B["close_ns"]
+    p = p or {}
+    trail_mode = str(p.get("trail_mode", "be_only"))
+    trail_check = str(p.get("trail_check", "bar"))
+    tiers = v2_common.get_trail_tiers_r(trail_mode, be_rr)
+    sl_cooldown_ns = int(float(p.get("sl_cooldown_hours", 0.0) or 0.0) * 3600 * 10**9)
+    block_same_poi = int(p.get("block_same_poi", 0) or 0) == 1
+    same_poi_tol = float(p.get("same_poi_tol_pct", 0.15) or 0.15) / 100.0
+    cancel_on_flip = int(p.get("cancel_on_flip", 0) or 0) == 1
+    v2_st = v2_common.get_pair_v2_state(pd_, p) if (cancel_on_flip or trail_check != "bar") else None
+
+    eq = np.full(n, float(capital))
+    bal = float(capital)
+    busy = -1
+    last_eq_idx = 0
+    cooldown_until_ns = -1
+    last_sl_zone = None
+    last_sl_poi = np.nan
+    last_sl_sign = 0
+    rows = []
+
+    for s in sigs:
+        s0 = int(s[0])
+        if s0 < busy or s0 >= n - 1:
+            continue
+        if sl_cooldown_ns > 0 and int(close_ns[s0]) < cooldown_until_ns:
+            continue
+        sign = int(s[1])
+        en, sl, tp = float(s[2]), float(s[3]), float(s[4])
+        zid = int(s[10])
+        real_en = abs(en)
+        if block_same_poi and last_sl_sign == sign:
+            if last_sl_zone == (sign, zid):
+                continue
+            if not np.isnan(last_sl_poi) and last_sl_poi > 0 and abs(real_en - last_sl_poi) / last_sl_poi <= same_poi_tol:
+                continue
+
+        o, h, l, c = worlds[sign]
+        end = min(n - 1, s0 + ttl) if ttl > 0 else n - 1
+        fill = -1
+        for t in range(s0 + 1, end + 1):
+            if noentry is not None and noentry[t]:
+                break
+            if h[t] >= en:
+                fill = t
+                break
+            if l[t] <= tp or h[t] >= sl:
+                break
+            if cancel_on_flip and v2_st is not None and v2_common.should_cancel_resting_on_flip(t, -sign, v2_st, p):
+                break
+        if fill < 0:
+            continue
+
+        risk_dist = sl - en
+        loss_unit = risk_dist + abs(en) * fee + abs(sl) * fee
+        if risk_dist <= 0 or loss_unit <= 0:
+            continue
+        risk_cash = bal * (risk_pct / 100.0)
+        qty = risk_cash / loss_unit
+        if qty * abs(en) > bal * lev:
+            continue
+
+        efee = qty * abs(en) * fee
+        bal -= efee
+        if fill > last_eq_idx:
+            eq[last_eq_idx:fill] = bal + efee
+            last_eq_idx = fill
+
+        cur_sl = sl
+        cur_tier = 0
+        xbar = n - 1
+        xprice = c[n - 1]
+        reason = 3  # END
+        for t in range(fill, n):
+            if t > fill and fexit is not None and fexit[t]:
+                xbar, xprice, reason = t, o[t], 4
+                break
+            if h[t] >= cur_sl:
+                xbar = t
+                xprice = max(cur_sl, o[t]) if t > fill else cur_sl
+                reason = 5 if cur_tier >= 2 else (2 if cur_tier == 1 else 0)
+                break
+            if t > fill and l[t] <= tp:
+                xbar = t
+                xprice = min(tp, o[t])
+                reason = 1
+                break
+            if t > fill and tiers:
+                is_30m = bool(v2_st["is_30m_close"][t]) if v2_st is not None else True
+                new_sl, new_tier = v2_common.compute_new_trail_sl(
+                    "short", en, cur_sl, risk_dist, cur_tier, h[t], l[t], c[t], is_30m, tiers, trail_check
+                )
+                if new_tier > cur_tier:
+                    cur_sl = new_sl
+                    cur_tier = new_tier
+            eq[t] = bal + (en - c[t]) * qty
+
+        gross = (en - xprice) * qty
+        xfee = qty * abs(xprice) * fee
+        bal += gross - xfee
+        net = gross - efee - xfee
+        r_mult = net / risk_cash if risk_cash > 0 else 0.0
+        eq[xbar] = bal
+        last_eq_idx = xbar + 1
+        busy = xbar
+
+        if r_mult < -0.1:
+            if sl_cooldown_ns > 0:
+                cooldown_until_ns = int(close_ns[xbar]) + sl_cooldown_ns
+            if block_same_poi:
+                last_sl_zone = (sign, zid)
+                last_sl_poi = real_en
+                last_sl_sign = sign
+        elif r_mult > 0.1:
+            last_sl_zone = None
+            last_sl_poi = np.nan
+            last_sl_sign = 0
+
+        d = {
+            "sig": s,
+            "fill": fill,
+            "exit": xbar,
+            "reason": reason,
+            "entry": en,
+            "xprice": xprice,
+            "sl": sl,
+            "tp": tp,
+            "pnl": net,
+            "r": r_mult,
+        }
+        rows.append((s, d, sign))
+
+    if last_eq_idx < n:
+        eq[last_eq_idx:] = bal
+    tr = _rows_to_df(pd_, rows)
+    return tr, eq[a:b], stats(tr, eq[a:b], capital)
 
 
 def _trades(pd_, sigs, cols, sign):

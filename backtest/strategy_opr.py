@@ -46,6 +46,7 @@ import gzip
 import os
 import numpy as np
 import pandas as pd
+import v2_common
 
 SETUP_ORDER = ["Cassure", "Reintegration"]
 
@@ -111,6 +112,8 @@ PARAMS = {
     "max_mm_spread_atr": 1.35,  # Écart maximal |MM20 - MM50| en H1 en fraction de l'ATR H1 (évite les fins de tendance H1 épuisées)
     "true_breakout_only": 1,    # 1 = la bougie M5 de Cassure doit franchir la borne OPR (pas la 4e bougie déjà dehors)
     "max_fill_bars": 6,         # Délai max (en bougies M5) pour déclencher l'ordre limite après le signal (6 = 30 min)
+    # --- OPR 2.0 / OTR 2.0 (améliorations Crypto V4 : Trailing R, Biais H4 + M15, Fenêtre Volatilité, Cooldown SL, Anti-Repeat POI) ---
+    **v2_common.V2_DEFAULT_PARAMS,
 }
 
 
@@ -741,6 +744,22 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
     start_search = max(0, i0)
     end_search = min(n, i1)
 
+    trail_mode = str(p.get("trail_mode", "be_only"))
+    trail_check = str(p.get("trail_check", "bar"))
+    tiers = v2_common.get_trail_tiers_r(trail_mode, be_rr)
+    sl_cooldown_ns = int(float(p.get("sl_cooldown_hours", 0.0) or 0.0) * 3600 * 10**9)
+    block_same_poi = int(p.get("block_same_poi", 0) or 0) == 1
+    same_poi_tol = float(p.get("same_poi_tol_pct", 0.15) or 0.15) / 100.0
+    cancel_on_flip = int(p.get("cancel_on_flip", 0) or 0) == 1
+    need_v2_state = (
+        str(p.get("h4_bias_mode", "none")) != "none"
+        or float(p.get("m15_min_atr", 0.0) or 0.0) > 0.0
+        or float(p.get("m15_max_atr", 0.0) or 0.0) > 0.0
+        or cancel_on_flip
+        or trail_check != "bar"
+    )
+    v2_st = v2_common.get_pair_v2_state(pd_, p) if need_v2_state else None
+
     signals = []
     for ds in daily_sessions:
         d_start = ds["d_start"]
@@ -826,7 +845,10 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
 
             # --- Filtre Anti-Range 3 & Anti-Épuisement H1 : Écart |MM20 - MM50| / ATR_H1 dans [min_mm_spread_atr, max_mm_spread_atr] ---
             mm_sp = float(mm_spread_vec[k])
-            if (min_mm_spread_atr > 0.0 and mm_sp < min_mm_spread_atr) or (max_mm_spread_atr < 90.0 and mm_sp > max_mm_spread_atr):
+            v2_ok = True
+            if v2_st is not None and t_dir != 0:
+                v2_ok = v2_common.pass_v2_entry_filters(k, 1 if t_dir == 1 else -1, v2_st, p)
+            if (not v2_ok) or (min_mm_spread_atr > 0.0 and mm_sp < min_mm_spread_atr) or (max_mm_spread_atr < 90.0 and mm_sp > max_mm_spread_atr):
                 if lk < opr_lo:
                     exited_below = True
                 if hk > opr_hi:
@@ -980,10 +1002,16 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
 
     # 2) Simulation de chaque ordre limite (annulé si 1R atteint avant exécution, ou délai max dépassé, ou 19h30 atteint)
     raw_trades = []
+    cooldown_until_ns = -1
+    last_sl_poi = np.nan
+    last_sl_sign = 0
+
     for s in signals:
         sig_i = s["sig_i"]
         f_idx = s["f_idx"]
         if sig_i + 1 >= f_idx:
+            continue
+        if sl_cooldown_ns > 0 and int(close_ns[sig_i]) < cooldown_until_ns:
             continue
 
         sign = s["sign"]
@@ -993,6 +1021,9 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
         risk_dist = abs(en - sl)
         if risk_dist <= 0:
             continue
+        if block_same_poi and last_sl_sign == sign and not np.isnan(last_sl_poi) and last_sl_poi > 0:
+            if abs(en - last_sl_poi) / last_sl_poi <= same_poi_tol:
+                continue
 
         cancel_lvl = (en + cancel_rr * risk_dist) if sign == -1 else (en - cancel_rr * risk_dist)
         fill_limit_end = min(f_idx, i1, sig_i + 1 + max_fill_bars) if max_fill_bars > 0 else min(f_idx, i1)
@@ -1005,11 +1036,15 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     break
                 if cancel_rr > 0 and h[k] >= cancel_lvl:
                     break
+                if cancel_on_flip and v2_st is not None and v2_common.should_cancel_resting_on_flip(k, 1, v2_st, p):
+                    break
             else:           # Short : SELL LIMIT à en
                 if h[k] >= en:
                     fill = k
                     break
                 if cancel_rr > 0 and l[k] <= cancel_lvl:
+                    break
+                if cancel_on_flip and v2_st is not None and v2_common.should_cancel_resting_on_flip(k, -1, v2_st, p):
                     break
 
         if fill < 0:
@@ -1022,6 +1057,7 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             continue
 
         cur_sl = sl
+        cur_tier = 0
         be_done = False
         xi = i1 - 1
         xp = float(c[xi])
@@ -1031,7 +1067,7 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
             if sign == -1:  # Long
                 if l[j] <= cur_sl:
                     xp = float(min(cur_sl, o[j])) if j > fill else float(cur_sl)
-                    reason = "BE" if be_done else "SL"
+                    reason = "TRAIL" if cur_tier >= 2 else ("BE" if be_done else "SL")
                     xi = j
                     break
                 if j > fill and h[j] >= tp:
@@ -1039,13 +1075,19 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     reason = "TP"
                     xi = j
                     break
-                if be_rr > 0 and not be_done and j > fill and h[j] >= en + be_rr * risk_dist:
-                    cur_sl = en
-                    be_done = True
+                if j > fill and tiers:
+                    is_30m = bool(v2_st["is_30m_close"][j]) if v2_st is not None else True
+                    new_sl, new_tier = v2_common.compute_new_trail_sl(
+                        "long", en, cur_sl, risk_dist, cur_tier, h[j], l[j], c[j], is_30m, tiers, trail_check
+                    )
+                    if new_tier > cur_tier:
+                        cur_sl = new_sl
+                        cur_tier = new_tier
+                        be_done = True
             else:           # Short
                 if h[j] >= cur_sl:
                     xp = float(max(cur_sl, o[j])) if j > fill else float(cur_sl)
-                    reason = "BE" if be_done else "SL"
+                    reason = "TRAIL" if cur_tier >= 2 else ("BE" if be_done else "SL")
                     xi = j
                     break
                 if j > fill and l[j] <= tp:
@@ -1053,13 +1095,29 @@ def run(pd_, capital=10000.0, risk_pct=0.5, fee_pct=0.005, leverage=30.0, p=None
                     reason = "TP"
                     xi = j
                     break
-                if be_rr > 0 and not be_done and j > fill and l[j] <= en - be_rr * risk_dist:
-                    cur_sl = en
-                    be_done = True
+                if j > fill and tiers:
+                    is_30m = bool(v2_st["is_30m_close"][j]) if v2_st is not None else True
+                    new_sl, new_tier = v2_common.compute_new_trail_sl(
+                        "short", en, cur_sl, risk_dist, cur_tier, h[j], l[j], c[j], is_30m, tiers, trail_check
+                    )
+                    if new_tier > cur_tier:
+                        cur_sl = new_sl
+                        cur_tier = new_tier
+                        be_done = True
 
         gross_per_unit = (xp - en) if sign == -1 else (en - xp)
         fee_per_unit = (abs(en) + abs(xp)) * fee
         r_mult = (gross_per_unit - fee_per_unit) / loss_unit
+
+        if r_mult < -0.1:
+            if sl_cooldown_ns > 0:
+                cooldown_until_ns = int(close_ns[xi]) + sl_cooldown_ns
+            if block_same_poi:
+                last_sl_poi = float(en)
+                last_sl_sign = sign
+        elif r_mult > 0.1:
+            last_sl_poi = np.nan
+            last_sl_sign = 0
 
         opr_i0 = s["opr_i0"]
         f_i = min(s["f_idx"] - 1, n - 1)

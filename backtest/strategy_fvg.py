@@ -11,6 +11,7 @@ import numpy as np
 import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import native
 import zones
+import v2_common
 
 PARAMS = {
     # --- confirmation MSS ---
@@ -45,6 +46,8 @@ PARAMS = {
     "trend": "none",         # "none" ou "4h:200", "1d:50", ... (clôture vs EMA : short seulement sous l'EMA, long seulement au-dessus)
     "session_start": 0,      # heures UTC d'entrée autorisées [start, end)
     "session_end": 24,
+    # --- FVG 2.0 (améliorations Crypto V4 : Trailing R, Biais H4 + M15, Fenêtre Volatilité, Cooldown SL, Anti-Repeat Zone/POI) ---
+    **v2_common.V2_DEFAULT_PARAMS,
 }
 
 
@@ -79,6 +82,12 @@ def events(pd_, sign, tf, p):
 def signals(pd_, p, a=0, b=None):
     """Tous les ordres limites (côté, bougie de signal en 5m, entrée, SL, TP) pour les bougies de base dans [a, b)."""
     b = pd_.n if b is None else b
+    use_v2_filter = (
+        str(p.get("h4_bias_mode", "none")) != "none"
+        or float(p.get("m15_min_atr", 0.0) or 0.0) > 0.0
+        or float(p.get("m15_max_atr", 0.0) or 0.0) > 0.0
+    )
+    v2_st = v2_common.get_pair_v2_state(pd_, p) if use_v2_filter else None
     out = []
     for sign in (1, -1):
         if p["side"] not in ("both", "short" if sign == 1 else "long"):
@@ -108,6 +117,8 @@ def signals(pd_, p, a=0, b=None):
             if p["min_sl_pct"] > 0:
                 m &= (sl - entry) >= p["min_sl_pct"] / 100.0 * np.abs(entry)
             for i in np.flatnonzero(m):
+                if v2_st is not None and not v2_common.pass_v2_entry_filters(int(bi[i]), -sign, v2_st, p):
+                    continue
                 q0, t0 = int(ev["h2i"][i]), int(ev["t"][i])   # premier FVG de la jambe (même règle que le noyau C), pour l'affichage
                 jf = next((q for q in range(q0, t0 - 1) if conf["h"][q + 2] < conf["l"][q]
                            and conf["l"][q] - conf["h"][q + 2] >= p["fvg_min_atr"] * conf["atr"][t0]), q0)

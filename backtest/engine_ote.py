@@ -13,10 +13,13 @@
 
 import numpy as np
 import pandas as pd
+import v2_common
 
 
 def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slippage_pct=0.02,
-                 max_leverage=1.0, allow_short=True, max_bars=None, be_rr=None, pre_prepared=False):
+                 max_leverage=1.0, allow_short=True, max_bars=None, be_rr=None, pre_prepared=False, p=None):
+    if p is None:
+        p = getattr(strategy, "PARAMS", {}) or {}
     if not pre_prepared:
         df = strategy.prepare(df.copy()).reset_index(drop=True)
     else:
@@ -28,27 +31,58 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
     fee = fee_pct / 100.0
     slip = slippage_pct / 100.0
 
-    be_on = be_rr is not None and 0 < float(be_rr) < 1000
+    be_val = float(be_rr) if be_rr is not None else float(p.get("be_rr", 1000.0))
+    trail_mode = str(p.get("trail_mode", "be_only"))
+    trail_check = str(p.get("trail_check", "bar"))
+    tiers = v2_common.get_trail_tiers_r(trail_mode, be_val)
+    sl_cooldown_ns = int(float(p.get("sl_cooldown_hours", 0.0) or 0.0) * 3600 * 10**9)
+    block_same_poi = int(p.get("block_same_poi", 0) or 0) == 1
+    same_poi_tol = float(p.get("same_poi_tol_pct", 0.15) or 0.15) / 100.0
+    cancel_on_flip = int(p.get("cancel_on_flip", 0) or 0) == 1
+
+    close_ns = d.get("close_ns")
+    v2_st = None
+    if "v2_biais_h4" in d:
+        v2_st = {
+            "biais_h4": d["v2_biais_h4"],
+            "mom_m15": d["v2_mom_m15"],
+            "rng_m15_atr": d["v2_rng_m15_atr"],
+            "is_30m_close": d["v2_is_30m"],
+        }
+
     balance = float(capital)
     pos = None
     pending = None
     trades = []
     skipped = 0
     equity = np.full(n, np.nan)
+    cooldown_until_ns = -1
+    last_sl_poi = np.nan
+    last_sl_side = ""
 
     def close_position(i, price, reason):
-        nonlocal balance, pos
+        nonlocal balance, pos, cooldown_until_ns, last_sl_poi, last_sl_side
         direction = 1 if pos["side"] == "long" else -1
         gross = (price - pos["entry"]) * pos["qty"] * direction
         exit_fee = pos["qty"] * price * fee
         balance += gross - exit_fee
         net = gross - pos["entry_fee"] - exit_fee
+        r_mult = net / pos["risk_amount"] if pos["risk_amount"] > 0 else 0.0
+        if r_mult < -0.1:
+            if sl_cooldown_ns > 0 and close_ns is not None:
+                cooldown_until_ns = int(close_ns[i]) + sl_cooldown_ns
+            if block_same_poi:
+                last_sl_poi = float(pos["entry"])
+                last_sl_side = pos["side"]
+        elif r_mult > 0.1:
+            last_sl_poi = np.nan
+            last_sl_side = ""
         trades.append({
             "entry_time": pos["entry_time"], "exit_time": times.iloc[i], "side": pos["side"],
             "entry": pos["entry"], "exit": price, "sl": pos["init_sl"], "tp": pos["tp"], "qty": pos["qty"],
             "bars": i - pos["entry_i"], "reason": reason, "setup": pos["meta"], "be_done": pos["be_done"],
             "fees": pos["entry_fee"] + exit_fee, "pnl": net,
-            "r": net / pos["risk_amount"] if pos["risk_amount"] > 0 else 0.0,
+            "r": r_mult,
             "balance_after": balance,
             **pos["info"],
         })
@@ -75,10 +109,14 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
                         fill_now = True
                     elif (tp is not None and l[i] <= float(tp)) or h[i] >= sl:
                         pending = None
+                    elif cancel_on_flip and v2_st is not None and v2_common.should_cancel_resting_on_flip(i, -1, v2_st, p):
+                        pending = None
                 else:
                     if l[i] <= ref:
                         fill_now = True
                     elif (tp is not None and h[i] >= float(tp)) or l[i] <= sl:
+                        pending = None
+                    elif cancel_on_flip and v2_st is not None and v2_common.should_cancel_resting_on_flip(i, 1, v2_st, p):
                         pending = None
             else:
                 fill_now = True
@@ -112,7 +150,8 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
                     entry_fee = qty * entry * fee
                     balance -= entry_fee
                     pos = {"side": side, "entry": entry, "sl": sl, "init_sl": sl, "tp": tp, "qty": qty, "entry_i": i,
-                           "entry_time": times.iloc[i], "entry_fee": entry_fee, "risk_amount": risk_cash, "risk_dist": risk_dist, "be_done": False,
+                           "entry_time": times.iloc[i], "entry_fee": entry_fee, "risk_amount": risk_cash, "risk_dist": risk_dist,
+                           "be_done": False, "tier": 0,
                            "order_type": otype, "meta": sig.get("meta", ""), "info": sig.get("info") or {}}
 
         # 2) gestion de la position sur cette bougie
@@ -120,7 +159,8 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
             same_limit_bar = (pos.get("order_type") == "limit" and i == pos["entry_i"])
             gap = not same_limit_bar
             sl, tp = pos["sl"], pos["tp"]
-            sl_label = "BE" if pos["be_done"] else "SL"
+            tier = pos.get("tier", 0)
+            sl_label = "TRAIL" if tier >= 2 else ("BE" if pos["be_done"] else "SL")
             if pos["side"] == "long":
                 if l[i] <= sl:
                     stop = min(sl, o[i]) if gap else sl
@@ -133,10 +173,16 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
                     close_position(i, stop * (1 + slip), sl_label)
                 elif not same_limit_bar and tp is not None and l[i] <= tp:
                     close_position(i, min(tp, o[i]) if gap else tp, "TP")
-            if pos is not None and not same_limit_bar and be_on and not pos["be_done"]:
-                trig = pos["entry"] + be_rr * pos["risk_dist"] if pos["side"] == "long" else pos["entry"] - be_rr * pos["risk_dist"]
-                if (pos["side"] == "long" and h[i] >= trig) or (pos["side"] == "short" and l[i] <= trig):
-                    pos["sl"], pos["be_done"] = pos["entry"], True     # actif à partir de la bougie suivante
+            if pos is not None and not same_limit_bar and tiers:
+                is_30m = bool(v2_st["is_30m_close"][i]) if v2_st is not None else True
+                new_sl, new_tier = v2_common.compute_new_trail_sl(
+                    pos["side"], pos["entry"], pos["sl"], pos["risk_dist"], pos.get("tier", 0),
+                    h[i], l[i], c[i], is_30m, tiers, trail_check
+                )
+                if new_tier > pos.get("tier", 0):
+                    pos["sl"] = new_sl
+                    pos["tier"] = new_tier
+                    pos["be_done"] = True
             if pos is not None and max_bars and i - pos["entry_i"] >= max_bars:
                 close_position(i, c[i] * (1 - slip if pos["side"] == "long" else 1 + slip), "TIMEOUT")
 
@@ -149,8 +195,14 @@ def run_backtest(df, strategy, capital=10000.0, risk_pct=1.0, fee_pct=0.1, slipp
 
         # 4) nouveau signal à la clôture (exécuté à partir de la bougie suivante ; remplace un ordre limit non rempli)
         if pos is None and i < n - 1:
+            if sl_cooldown_ns > 0 and close_ns is not None and int(close_ns[i]) < cooldown_until_ns:
+                continue
             sig = strategy.signal(d, i)
             if sig:
+                if block_same_poi and not np.isnan(last_sl_poi) and sig["side"] == last_sl_side and last_sl_poi > 0:
+                    sig_en = float(sig.get("entry", c[i]))
+                    if abs(sig_en - last_sl_poi) / last_sl_poi <= same_poi_tol:
+                        continue
                 pending = sig
 
     if pos is not None:  # position encore ouverte à la fin des données

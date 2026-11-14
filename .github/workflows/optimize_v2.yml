@@ -1,0 +1,66 @@
+name: Optimisation Multi-Paliers 2.0 (OTE 2.0 / FVG 2.0 / OPR 2.0)
+
+on:
+  workflow_dispatch:
+    inputs:
+      strategy:
+        description: "Stratégie(s) 2.0 à optimiser (3 Paliers x 4 Folds Walk-Forward)"
+        type: choice
+        default: "all"
+        options: ["all", "ote2", "fvg2", "opr2"]
+      pairs:
+        description: "Actifs candidats (vide = sélection automatique des actifs rentables sur TRAIN)"
+        default: ""
+      trials:
+        description: "Nombre d'essais Optuna par stratégie (répartis sur les 3 paliers)"
+        default: "600"
+      split:
+        description: "Coupure TRAIN / Holdout TEST (AAAA-MM-JJ)"
+        default: "2024-07-01"
+      n_folds:
+        description: "Nombre de plis temporels Walk-Forward sur le TRAIN (733k-883k bougies)"
+        default: "4"
+      max_hours:
+        description: "Durée maximale totale en heures (max GitHub = 5.4)"
+        default: "4.5"
+
+jobs:
+  optimize_v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Optimisation Multi-Paliers + Walk-Forward (OTE 2.0 / FVG 2.0 / OPR 2.0)
+        run: |
+          set -o pipefail
+          python backtest/optimize_v2.py \
+            --strategy "${{ inputs.strategy }}" \
+            --pairs "${{ inputs.pairs }}" \
+            --trials "${{ inputs.trials }}" \
+            --split "${{ inputs.split }}" \
+            --n_folds "${{ inputs.n_folds }}" \
+            --max_hours "${{ inputs.max_hours }}" 2>&1 | tee results/optimize_v2_log.txt
+      - name: Sauvegarde automatique des best_params_*2.json dans le dépôt GitHub
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/best_params_ote2.json results/best_params_fvg2.json results/best_params_opr2.json results/best_params_otr2.json
+          git diff --staged --quiet || (git pull --rebase --autostash origin main && git commit -m "chore(v2): update best_params_{ote2,fvg2,opr2}.json from Multi-Palier WFA" && git push)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: optimisation-v2-results
+          path: |
+            results/best_params_ote2.json
+            results/best_params_fvg2.json
+            results/best_params_opr2.json
+            results/best_params_otr2.json
+            results/optimize_v2_log.txt
+
