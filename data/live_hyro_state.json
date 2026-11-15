@@ -6,10 +6,12 @@
   "day_locked_reason": "",
   "day_pnl_history": {
     "2026-11-14": -0.054050000000006544,
-    "2026-11-15": -0.05290000000000873
+    "2026-11-15": -0.05014999999999418
   },
   "day_start_balance": 10000.0,
-  "days_traded": [],
+  "days_traded": [
+    "2026-11-15"
+  ],
   "dry_run_balance": 10000.0,
   "dry_run_orders": {},
   "dry_run_positions": {},
@@ -21,7 +23,10 @@
       "peak_px": 0.0
     },
     "BTCUSDT": {
-      "peak_px": 0.0
+      "active_sl_price": 66733.05805833332,
+      "active_tp_price": 59075.16615,
+      "peak_px": 0.0,
+      "pending_poi": 65573.5
     },
     "ETHUSDT": {
       "peak_px": 0.0
