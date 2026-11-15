@@ -1,12 +1,19 @@
 {
-  "active_positions": {},
+  "active_positions": {
+    "BTCUSDT": {
+      "entry_price": 64684.1,
+      "poi": 64619.5,
+      "side": "short",
+      "size": 0.063
+    }
+  },
   "challenge_passed": false,
   "cloudfront_warned": false,
   "cur_utc_day": "2026-11-15",
   "day_locked_reason": "",
   "day_pnl_history": {
     "2026-11-14": -0.054050000000006544,
-    "2026-11-15": -0.0475
+    "2026-11-15": -0.0878105047047211
   },
   "day_start_balance": 10000.0,
   "days_traded": [
@@ -17,7 +24,7 @@
   "dry_run_positions": {},
   "hwm_balance": 10000.0,
   "initial_balance": 10000.0,
-  "last_wallet_balance": 10000.0,
+  "last_wallet_balance": 9863.34837034,
   "symbols": {
     "AVAXUSDT": {
       "peak_px": 0.0
@@ -25,7 +32,7 @@
     "BTCUSDT": {
       "active_sl_price": 65762.18815833332,
       "active_tp_price": 58215.70754999999,
-      "peak_px": 0.0,
+      "peak_px": 64729.88648188567,
       "pending_poi": 64619.5
     },
     "ETHUSDT": {
