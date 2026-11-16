@@ -1,5 +1,11 @@
 {
   "active_positions": {
+    "AVAXUSDT": {
+      "entry_price": 7.154,
+      "poi": 7.1611,
+      "side": "long",
+      "size": 513.4
+    },
     "BTCUSDT": {
       "entry_price": 64684.1,
       "poi": 64619.5,
@@ -14,7 +20,7 @@
   "day_pnl_history": {
     "2026-11-14": -0.054050000000006544,
     "2026-11-15": -0.11855922478473076,
-    "2026-11-16": 1.5055563182313016
+    "2026-11-16": 1.3763680842357826
   },
   "day_start_balance": 9726.53879872995,
   "days_traded": [
@@ -26,12 +32,12 @@
   "dry_run_positions": {},
   "hwm_balance": 10000.0,
   "initial_balance": 10000.0,
-  "last_wallet_balance": 9789.81050239735,
+  "last_wallet_balance": 9666.647143010683,
   "symbols": {
     "AVAXUSDT": {
       "active_sl_price": 7.0347065849999995,
       "active_tp_price": 7.8693327900000005,
-      "peak_px": 0.0,
+      "peak_px": 7.127500900333334,
       "pending_poi": 7.1611
     },
     "BTCUSDT": {
