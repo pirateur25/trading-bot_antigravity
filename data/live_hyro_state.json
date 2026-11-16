@@ -14,7 +14,7 @@
   "day_pnl_history": {
     "2026-11-14": -0.054050000000006544,
     "2026-11-15": -0.11855922478473076,
-    "2026-11-16": 1.583173617520588
+    "2026-11-16": 1.4803498296644284
   },
   "day_start_balance": 9726.53879872995,
   "days_traded": [
@@ -41,10 +41,10 @@
       "pending_poi": 64619.5
     },
     "ETHUSDT": {
-      "active_sl_price": 0.0,
-      "active_tp_price": 0.0,
+      "active_sl_price": 1788.4664099999998,
+      "active_tp_price": 2000.65734,
       "peak_px": 0.0,
-      "pending_poi": 1821.7
+      "pending_poi": 1820.6
     },
     "INJUSDT": {
       "peak_px": 0.0
