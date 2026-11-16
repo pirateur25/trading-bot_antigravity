@@ -15,22 +15,24 @@
   },
   "challenge_passed": false,
   "cloudfront_warned": false,
-  "cur_utc_day": "2026-11-15",
+  "cur_utc_day": "2026-11-16",
   "day_locked_reason": "",
   "day_pnl_history": {
     "2026-11-14": -0.054050000000006544,
-    "2026-11-15": -0.11855922478473076
+    "2026-11-15": -0.11855922478473076,
+    "2026-11-16": 2.6397887134268605
   },
-  "day_start_balance": 10000.0,
+  "day_start_balance": 9726.53879872995,
   "days_traded": [
-    "2026-11-15"
+    "2026-11-15",
+    "2026-11-16"
   ],
   "dry_run_balance": 10000.0,
   "dry_run_orders": {},
   "dry_run_positions": {},
   "hwm_balance": 10000.0,
   "initial_balance": 10000.0,
-  "last_wallet_balance": 9726.587664124,
+  "last_wallet_balance": 9726.53879872995,
   "symbols": {
     "AVAXUSDT": {
       "peak_px": 0.0
@@ -44,7 +46,7 @@
     "ETHUSDT": {
       "active_sl_price": 1789.546995,
       "active_tp_price": 2001.8661300000003,
-      "peak_px": 1828.047329456,
+      "peak_px": 1835.2609263546667,
       "pending_poi": 1821.7
     },
     "INJUSDT": {
