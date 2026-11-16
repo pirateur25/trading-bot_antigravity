@@ -14,7 +14,7 @@
   "day_pnl_history": {
     "2026-11-14": -0.054050000000006544,
     "2026-11-15": -0.11855922478473076,
-    "2026-11-16": 2.137690838064391
+    "2026-11-16": 2.028057377343357
   },
   "day_start_balance": 9726.53879872995,
   "days_traded": [
@@ -26,7 +26,7 @@
   "dry_run_positions": {},
   "hwm_balance": 10000.0,
   "initial_balance": 10000.0,
-  "last_wallet_balance": 9789.560599894608,
+  "last_wallet_balance": 9789.81050239735,
   "symbols": {
     "AVAXUSDT": {
       "peak_px": 0.0
