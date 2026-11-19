@@ -306,7 +306,7 @@ class BybitV5Client:
         except Exception:
             pass
 
-    def set_tp_sl(self, symbol: str, sl_price: float = None, tp_price: float = None):
+    def set_tp_sl(self, symbol: str, sl_price: float = None, tp_price: float = None, side_int: int = None, position_side: str = "net", margin_mode: str = "isolated"):
         sym = to_bybit_symbol(symbol)
         spec = self.get_instrument_spec(sym)
         tick = spec["tick_size"]
@@ -473,6 +473,8 @@ class BloFinV1Client:
                 "symbol": to_bybit_symbol(inst_id),
                 "side": "long" if side_int == 1 else "short",
                 "side_int": side_int,
+                "position_side": str(p.get("positionSide") or "net").lower(),
+                "margin_mode": str(p.get("marginMode") or "isolated").lower(),
                 "size": coin_sz,
                 "contracts": abs(pos_sz),
                 "entry_price": float(p.get("averagePrice") or 0.0),
@@ -509,11 +511,38 @@ class BloFinV1Client:
         except Exception:
             pass
 
-    def set_tp_sl(self, symbol: str, sl_price: float = None, tp_price: float = None):
+    def cancel_all_tpsl(self, symbol: str):
+        inst_id = to_blofin_symbol(symbol)
+        try:
+            pending = self.request("GET", "/api/v1/trade/orders-tpsl-pending", {"instId": inst_id})
+            for item in (pending if isinstance(pending, list) else []):
+                tpsl_id = item.get("tpslId") or item.get("orderId")
+                if tpsl_id:
+                    try:
+                        self.request("POST", "/api/v1/trade/cancel-tpsl", [{"instId": inst_id, "tpslId": str(tpsl_id)}])
+                    except Exception:
+                        try:
+                            self.request("POST", "/api/v1/trade/cancel-tpsl", {"instId": inst_id, "tpslId": str(tpsl_id)})
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    def set_tp_sl(self, symbol: str, sl_price: float = None, tp_price: float = None, side_int: int = None, position_side: str = "net", margin_mode: str = "isolated"):
         inst_id = to_blofin_symbol(symbol)
         spec = self.get_instrument_spec(inst_id)
         tick = spec["tick_size"]
-        payload = {"instId": inst_id, "marginMode": "isolated", "size": "-1"}
+        # Sur BloFin, `side` est le sens de l'ordre de clôture : "sell" pour fermer un LONG, "buy" pour fermer un SHORT
+        close_side = "sell" if (side_int is None or int(side_int) == 1) else "buy"
+        self.cancel_all_tpsl(symbol)
+        payload = {
+            "instId": inst_id,
+            "marginMode": margin_mode or "isolated",
+            "positionSide": position_side or "net",
+            "side": close_side,
+            "size": "-1",
+            "reduceOnly": "true",
+        }
         if sl_price is not None and sl_price > 0:
             payload["slTriggerPrice"] = str(round_step(sl_price, tick, "nearest"))
             payload["slOrderPrice"] = "-1"
@@ -925,9 +954,9 @@ def main():
 
     if state["cur_utc_day"] != utc_day:
         state["cur_utc_day"] = utc_day
-        state["day_start_balance"] = wallet_bal
+        state["day_start_balance"] = equity
         state["day_locked_reason"] = ""
-        print(f"📅 Nouveau jour UTC ({utc_day}) : solde de référence journalier fixé à {wallet_bal:,.2f} USDT", flush=True)
+        print(f"📅 Nouveau jour UTC ({utc_day}) : équité de référence journalière fixée à {equity:,.2f} USDT (solde {wallet_bal:,.2f})", flush=True)
 
     if max(wallet_bal, equity) > state.get("hwm_balance", args.initial_capital):
         state["hwm_balance"] = max(wallet_bal, equity)
@@ -1093,6 +1122,8 @@ def main():
             for sym, pos in pos_by_sym.items()
         }
         state["last_wallet_balance"] = wallet_bal
+        # Sauvegarde immédiate de l'état après détection des ouvertures/clôtures (évite tout doublon Telegram en cas d'erreur API ultérieure)
+        save_state(args.state_path, state)
 
     for sym, pos in pos_by_sym.items():
         st_sym = state["symbols"].setdefault(sym, {})
@@ -1112,20 +1143,30 @@ def main():
         if trail_info["should_update"] or need_tp:
             new_sl = trail_info["target_sl_price"] if trail_info["tier"] > 0 else scv4._price_at_roi(pos["side_int"], pos["entry_price"], -float(p["sl_roi_pct"]), float(p["leverage"]))
             new_tp = trail_info["tp_price"]
-            if is_dry:
-                state["dry_run_positions"][sym]["sl_price"] = new_sl
-                state["dry_run_positions"][sym]["tp_price"] = new_tp
-            else:
-                client.set_tp_sl(sym, sl_price=new_sl, tp_price=new_tp)
-            st_sym["active_sl_price"] = new_sl
-            st_sym["active_tp_price"] = new_tp
-            if trail_info["should_update"]:
-                msg = (
-                    f"🔒 [{sym}] Trailing SL mis à jour (Palier {trail_info['tier']} | ROI pic {trail_info['roi_peak']:+.1f}%) : "
-                    f"SL -> {new_sl:.4f} ({trail_info['target_sl_roi']:+.0f}% ROI) | TP -> {new_tp:.4f}"
-                )
-                print(msg, flush=True)
-                tg_send(msg)
+            try:
+                if is_dry:
+                    state["dry_run_positions"][sym]["sl_price"] = new_sl
+                    state["dry_run_positions"][sym]["tp_price"] = new_tp
+                else:
+                    client.set_tp_sl(
+                        sym,
+                        sl_price=new_sl,
+                        tp_price=new_tp,
+                        side_int=pos["side_int"],
+                        position_side=pos.get("position_side", "net"),
+                        margin_mode=pos.get("margin_mode", "isolated"),
+                    )
+                st_sym["active_sl_price"] = new_sl
+                st_sym["active_tp_price"] = new_tp
+                if trail_info["should_update"]:
+                    msg = (
+                        f"🔒 [{sym}] Trailing SL mis à jour (Palier {trail_info['tier']} | ROI pic {trail_info['roi_peak']:+.1f}%) : "
+                        f"SL -> {new_sl:.4f} ({trail_info['target_sl_roi']:+.0f}% ROI) | TP -> {new_tp:.4f}"
+                    )
+                    print(msg, flush=True)
+                    tg_send(msg)
+            except Exception as e:
+                print(f"⚠️ [{sym}] Échec mise à jour Trailing SL/TP : {e}", flush=True)
 
     # ------------------------------------------------------------------
     # ÉTAPE 3 & 4 : Analyse SMC (15m/4h) & Ouverture calibrée Hyro One-Step
