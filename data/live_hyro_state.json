@@ -23,7 +23,7 @@
     "2026-11-16": 1.2236880029437815,
     "2026-11-17": 1.8565566271820353,
     "2026-11-18": 3.4749181243517344,
-    "2026-11-19": 0.0
+    "2026-11-19": 0.6260979780978778
   },
   "day_start_balance": 9966.69122072371,
   "days_traded": [
@@ -36,7 +36,7 @@
   "dry_run_balance": 10000.0,
   "dry_run_orders": {},
   "dry_run_positions": {},
-  "hwm_balance": 10015.045561281688,
+  "hwm_balance": 10029.301018533497,
   "initial_balance": 10000.0,
   "last_wallet_balance": 9517.849199940065,
   "symbols": {
@@ -49,13 +49,13 @@
     "BTCUSDT": {
       "active_sl_price": 64684.1,
       "active_tp_price": 58215.69,
-      "peak_px": 63101.850702901,
+      "peak_px": 62537.3778695665,
       "pending_poi": 64619.5
     },
     "ETHUSDT": {
       "active_sl_price": 1821.92,
       "active_tp_price": 1639.728,
-      "peak_px": 1783.1650658935,
+      "peak_px": 1770.556182172,
       "pending_poi": 1820.1
     },
     "INJUSDT": {
