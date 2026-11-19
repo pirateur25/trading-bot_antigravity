@@ -4,8 +4,8 @@
   "active_pois": {
     "AVAX": 7.0701,
     "INJ": 7.468,
-    "ETH": 1808.05,
-    "BTC": 64619.5
+    "ETH": 1801.7,
+    "BTC": 63528.0
   },
   "bot_sl": {
     "INJ": {
@@ -27,12 +27,17 @@
       "pos_id": "6afd35582a037e7e4f3eeaf7"
     },
     "AVAX": {
-      "sl": 7.0429243999999995,
-      "tp": 7.878525600000001,
-      "entry": 7.1622959999999996,
-      "pos_id": "6afd4b1a2a037e7e4f4aea71"
+      "sl": 7.183603999999999,
+      "tp": 6.359256,
+      "entry": 7.06584,
+      "pos_id": "6afeac1cbed3e5b6f44ef3de"
     }
   },
-  "known_positions": {},
+  "known_positions": {
+    "AVAX": {
+      "entry": 7.06584,
+      "ts": 1795075293.097741
+    }
+  },
   "raw_dumped": {}
 }
