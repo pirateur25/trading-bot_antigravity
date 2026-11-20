@@ -1,0 +1,59 @@
+name: Signal Quotidien H7.3 — Notification Telegram (The5ers / FTMO)
+
+on:
+  workflow_dispatch:
+    inputs:
+      capital:
+        description: "Capital du compte Prop Firm (USD)"
+        default: "10000"
+      risk_mult:
+        description: "Multiplicateur de risque (1.0 = standard | 1.25 = rapide The5ers)"
+        type: choice
+        default: "1.0"
+        options: ["1.0", "1.25"]
+  repository_dispatch:
+    types: [cron_h73_daily]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: signal-h73-daily
+  cancel-in-progress: false
+
+jobs:
+  signal_h73:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installation des dépendances minimales
+        run: pip install pandas numpy
+
+      - name: Calcul du signal H7.3 et envoi Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          CAP: ${{ inputs.capital || '10000' }}
+          RMULT: ${{ inputs.risk_mult || '1.0' }}
+        run: |
+          python research_v5/notify_h73_telegram.py \
+            --capital "$CAP" \
+            --risk_mult "$RMULT" \
+            --state_path research_v5/state_h73_signal.json
+
+      - name: Sauvegarde de l'état (deadband 0.05)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add research_v5/state_h73_signal.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(h73): maj etat signal quotidien $(date -u +'%Y-%m-%d')" || true
+            git push || true
+          fi
