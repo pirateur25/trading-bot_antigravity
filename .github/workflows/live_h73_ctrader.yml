@@ -21,10 +21,18 @@ on:
         description: "Capital initial du compte (USD)"
         default: "10000"
       risk_mult:
-        description: "Multiplicateur de risque (1.0 = standard | 1.25 = rapide The5ers)"
+        description: "Multiplicateur de risque de base (1.0 = standard | 1.25 = rapide)"
         type: choice
         default: "1.0"
         options: ["1.0", "1.25"]
+      browne_policy:
+        description: "Contrôle stochastique Browne (B2_BILAT = 76% P(pass) | B1_BOOST = 71% plus rapide | BASE = fixe)"
+        type: choice
+        default: "B2_BILAT"
+        options: ["B2_BILAT", "B1_BOOST", "BASE"]
+      target_pct:
+        description: "Cible de la phase en % (8.0 = Step 1 The5ers | 5.0 = Step 2 | 10.0 = FTMO Step 1 | 0.0 = Financé)"
+        default: "8.0"
   repository_dispatch:
     types: [cron_h73_ctrader_daily, cron_h73_ctrader_guard]
 
@@ -64,6 +72,8 @@ jobs:
           CTRADER_ENV: ${{ vars.CTRADER_ENV || 'demo' }}
           CTRADER_RISK_MULT: ${{ vars.CTRADER_RISK_MULT || '1.0' }}
           CTRADER_INITIAL_CAPITAL: ${{ vars.CTRADER_INITIAL_CAPITAL || '10000' }}
+          CTRADER_BROWNE_POLICY: ${{ vars.CTRADER_BROWNE_POLICY || 'B2_BILAT' }}
+          CTRADER_TARGET_PCT: ${{ vars.CTRADER_TARGET_PCT || '8.0' }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
@@ -76,12 +86,16 @@ jobs:
             ENV_ARG="$CTRADER_ENV"
             RMULT="$CTRADER_RISK_MULT"
             CAP="$CTRADER_INITIAL_CAPITAL"
+            BPOL="$CTRADER_BROWNE_POLICY"
+            TPCT="$CTRADER_TARGET_PCT"
             DRY_FLAG=""
           else
             MODE="${{ inputs.mode }}"
             ENV_ARG="${{ inputs.env }}"
             RMULT="${{ inputs.risk_mult }}"
             CAP="${{ inputs.initial_capital }}"
+            BPOL="${{ inputs.browne_policy }}"
+            TPCT="${{ inputs.target_pct }}"
             if [ "${{ inputs.dry_run }}" = "true" ]; then DRY_FLAG="--dry_run"; else DRY_FLAG=""; fi
           fi
 
@@ -90,6 +104,8 @@ jobs:
             --env "$ENV_ARG" \
             --initial_capital "$CAP" \
             --risk_mult "$RMULT" \
+            --browne_policy "$BPOL" \
+            --target_pct "$TPCT" \
             --state_path research_v5/state_h73_ctrader.json \
             $DRY_FLAG
 

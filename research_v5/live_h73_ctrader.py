@@ -153,10 +153,53 @@ def load_state(path: Path, initial_capital: float) -> dict:
     return {
         "initial_capital": initial_capital,
         "day_utc": "",
-        "day_start_balance": initial_capital,
+        "day_start_ref": initial_capital,
         "halted_utc_date": "",
         "weights": {s: 0.0 for s in H73_SYMS},
     }
+
+
+def compute_browne_control(
+    eq: float,
+    init_cap: float,
+    day_ref: float,
+    policy: str,
+    target_pct: float,
+    daily_stop_pct: float,
+    max_dd_limit_pct: float = 10.0,
+) -> tuple[float, float]:
+    """
+    Calcule le multiplicateur stochastique de Browne `m(E_t)` et le stop journalier adaptatif en USD :
+      - `B2_BILAT` : `[0,35 ; 1,05]` en drawdown + freinage de verrouillage près de la cible (`+8 %` ou `+5 %`).
+      - `B1_BOOST` : `[0,40 ; 1,15]` en drawdown (plus rapide, sans freinage cible).
+      - `BASE`     : levier constant `1,00x` + stop fixe `-3,8 %`.
+    """
+    max_dd_usd = init_cap * (max_dd_limit_pct / 100.0)
+    floor_usd = init_cap - max_dd_usd
+    cushion = max(0.0, eq - floor_usd)
+    ratio = cushion / max(1.0, max_dd_usd)
+
+    if policy == "BASE":
+        return 1.0, day_ref * (daily_stop_pct / 100.0)
+
+    stop_usd = min(day_ref * (daily_stop_pct / 100.0), 0.50 * cushion)
+    stop_usd = max(50.0, stop_usd)  # garde-fou anti-division zéro
+
+    if policy == "B1_BOOST":
+        m = float(np.clip(1.05 * ratio, 0.40, 1.15))
+        return m, stop_usd
+
+    # B2_BILAT (défaut : 76,0 % P(pass) sur The5ers, 68,1 % VALID)
+    m_down = float(np.clip(1.00 * ratio, 0.35, 1.05))
+    if target_pct > 0.0:
+        u_tgt = init_cap * (1.0 + target_pct / 100.0)
+        dist_u = max(0.0, u_tgt - eq)
+        sigma_d = 0.0101  # vol journalière de référence H7.3 1x
+        m_up = max(0.35, 0.40 * dist_u / max(1.0, sigma_d * eq))
+        m = min(m_down, m_up)
+    else:
+        m = m_down
+    return m, stop_usd
 
 
 def save_state(path: Path, state: dict) -> None:
@@ -281,31 +324,37 @@ def run_ctrader_session(args: argparse.Namespace) -> int:
         eq = bal + ctx["unrealized_pnl"]
         state_changed = False
 
+        # Règle exacte The5ers : référence journalière = max(Balance, Equity) au début de la journée
         if state.get("day_utc") != today_utc:
             state["day_utc"] = today_utc
-            state["day_start_balance"] = bal
+            state["day_start_ref"] = max(bal, eq)
             state_changed = True
 
-        day_start = float(state.get("day_start_balance", bal))
+        day_ref = float(state.get("day_start_ref", state.get("day_start_balance", max(bal, eq))))
         init_cap = float(state.get("initial_capital", args.initial_capital))
-        daily_pnl_pct = (eq - day_start) / max(1.0, day_start) * 100.0
+        m_browne, stop_usd = compute_browne_control(
+            eq, init_cap, day_ref, args.browne_policy, args.target_pct, args.daily_stop_pct
+        )
+        daily_pnl_usd = eq - day_ref
+        daily_pnl_pct = daily_pnl_usd / max(1.0, day_ref) * 100.0
         total_dd_pct = (eq - init_cap) / max(1.0, init_cap) * 100.0
 
         print(
-            f"[Guard {today_utc}] Balance={bal:,.2f}$ | Equity={eq:,.2f}$ | "
-            f"Jour={daily_pnl_pct:+.2f}% (seuil -{args.daily_stop_pct:.1f}%) | "
-            f"Total={total_dd_pct:+.2f}% (seuil -{args.max_dd_stop_pct:.1f}%) | Pos={len(ctx['positions'])}"
+            f"[Guard {today_utc}] Bal={bal:,.2f}$ | Eq={eq:,.2f}$ | Ref00h={day_ref:,.2f}$ | "
+            f"Jour={daily_pnl_usd:+,.2f}$ ({daily_pnl_pct:+.2f}%, stop=-{stop_usd:,.0f}$) | "
+            f"Total={total_dd_pct:+.2f}% | Browne({args.browne_policy})={m_browne:.2f}x | Pos={len(ctx['positions'])}"
         )
 
-        breach_daily = daily_pnl_pct <= -args.daily_stop_pct
+        breach_daily = daily_pnl_usd <= -stop_usd
         breach_total = total_dd_pct <= -args.max_dd_stop_pct
 
         if (breach_daily or breach_total) and len(ctx["positions"]) > 0:
-            reason = "PERTE JOURNALIÈRE" if breach_daily else "DRAWDOWN TOTAL"
+            reason = "PERTE JOURNALIÈRE ADAPTATIVE" if breach_daily else "DRAWDOWN TOTAL"
             msg = (
                 f"🚨 <b>GARDE-FOU H7.3 DÉCLENCHÉ ({reason})</b>\n"
-                f"Env : <code>{args.env}</code> | Compte : <code>{account_id}</code>\n"
-                f"• Équité : <b>{eq:,.2f} $</b> (Jour : <b>{daily_pnl_pct:+.2f}%</b> | Total : <b>{total_dd_pct:+.2f}%</b>)\n"
+                f"Env : <code>{args.env}</code> | Compte : <code>{account_id}</code> | Browne : <code>{args.browne_policy}</code>\n"
+                f"• Équité : <b>{eq:,.2f} $</b> (Jour : <b>{daily_pnl_usd:+,.0f} $ / {daily_pnl_pct:+.2f}%</b> | Stop : <b>-{stop_usd:,.0f} $</b>)\n"
+                f"• Total vs initial : <b>{total_dd_pct:+.2f}%</b>\n"
                 f"• Action : {'[DRY-RUN] ' if args.dry_run else ''}Fermeture immédiate de <b>{len(ctx['positions'])}</b> position(s)."
             )
             print(msg)
@@ -334,7 +383,7 @@ def run_ctrader_session(args: argparse.Namespace) -> int:
         eq = bal + ctx["unrealized_pnl"]
         if state.get("day_utc") != today_utc:
             state["day_utc"] = today_utc
-            state["day_start_balance"] = bal
+            state["day_start_ref"] = max(bal, eq)
 
         if state.get("halted_utc_date") == today_utc:
             msg = f"🛑 <b>H7.3 Daily ignoré ({today_utc})</b> : le garde-fou journalier a déjà coupé les positions aujourd'hui. Reprise demain UTC."
@@ -344,9 +393,15 @@ def run_ctrader_session(args: argparse.Namespace) -> int:
             return
 
         capital_ref = float(state.get("initial_capital", args.initial_capital))
-        deadband = 0.05 * args.risk_mult
+        day_ref = float(state.get("day_start_ref", max(bal, eq)))
+        m_browne, stop_usd = compute_browne_control(
+            eq, capital_ref, day_ref, args.browne_policy, args.target_pct, args.daily_stop_pct
+        )
+        eff_mult = args.risk_mult * m_browne
+
+        deadband = 0.05 * eff_mult
         prev_w = state.get("weights", {s: 0.0 for s in H73_SYMS})
-        target_w = h73_data["weights"]
+        target_w = {s: float(h73_data["weights"][s]) * m_browne for s in H73_SYMS}
         sigs = h73_data["signals"]
         prices = h73_data["prices"]
 
@@ -357,9 +412,10 @@ def run_ctrader_session(args: argparse.Namespace) -> int:
             tw = float(target_w[s])
             new_w[s] = tw if abs(tw - pw) >= deadband else pw
 
-        # Stop-loss natif par position : d_SL = min(8 %, 3.8 % / max(0.5, total_notional))
+        # Stop-loss natif par position calibré sur le stop adaptatif Browne
         tot_not_mult = sum(new_w.values())
-        sl_pct = min(0.08, (args.daily_stop_pct / 100.0) / max(0.5, tot_not_mult))
+        stop_frac = stop_usd / max(1.0, capital_ref)
+        sl_pct = min(0.08, stop_frac / max(0.5, tot_not_mult))
 
         # Positions ouvertes par symbolId
         pos_by_symid: dict[int, list] = {}
@@ -367,13 +423,17 @@ def run_ctrader_session(args: argparse.Namespace) -> int:
             sid = int(p.tradeData.symbolId)
             pos_by_symid.setdefault(sid, []).append(p)
 
+        pnl_tot_pct = (eq - capital_ref) / max(1.0, capital_ref) * 100.0
         lines = [
-            f"🤖 <b>H7.3 cTrader ({args.env.upper()}{' — DRY-RUN' if args.dry_run else ''})</b> — <code>{h73_data['date']}</code>",
-            f"Solde : <b>{bal:,.2f} $</b> | Équité : <b>{eq:,.2f} $</b> | Risque : <b>{args.risk_mult:.2f}x</b>",
+            f"🤖 <b>H7.3 + Browne ({args.env.upper()}{' — DRY-RUN' if args.dry_run else ''})</b> — <code>{h73_data['date']}</code>",
+            f"Solde : <b>{bal:,.2f} $</b> | Équité : <b>{eq:,.2f} $</b> (<code>{pnl_tot_pct:+.2f}%</code>)",
+            f"Contrôle <b>{args.browne_policy}</b> : <b>{m_browne:.2f}x</b> (cible <code>+{args.target_pct:.0f}%</code> | stop jour <b>-{stop_usd:,.0f} $</b>)",
             f"Piliers actifs : <b>{h73_data['pillars_sum']:.2f} / 3</b> "
-            + ("🟢 FEU VERT" if h73_data["pillars_sum"] >= 2.0 else "🔴 PRUDENCE"),
+            + ("🟢 FEU VERT CHALLENGE" if h73_data["pillars_sum"] >= 2.0 else "🔴 ATTENDRE AVANT NOUVEAU CHALLENGE"),
             "",
         ]
+        if args.target_pct > 0 and pnl_tot_pct >= (args.target_pct - 1.5):
+            lines.append("⚠️ <i>Proche cible : vérifiez que vous avez bien 3 jours clôturés ≥ +0,5 % (règle The5ers).</i>\n")
 
         orders_sent = 0
         for s in H73_SYMS:
@@ -527,6 +587,8 @@ def main() -> None:
     ap.add_argument("--env", choices=["demo", "live"], default="demo", help="demo = compte démo | live = serveur live")
     ap.add_argument("--initial_capital", type=float, default=10000.0, help="Capital initial du challenge (USD)")
     ap.add_argument("--risk_mult", type=float, default=1.0, help="1.0 = standard | 1.25 = rapide The5ers")
+    ap.add_argument("--browne_policy", choices=["B2_BILAT", "B1_BOOST", "BASE"], default="B2_BILAT", help="Contrôle stochastique Browne")
+    ap.add_argument("--target_pct", type=float, default=8.0, help="Cible de la phase en % (8.0=Step1 The5ers, 5.0=Step2, 0.0=Financé)")
     ap.add_argument("--daily_stop_pct", type=float, default=3.8, help="Stop journalier sécurité en % (défaut: 3.8)")
     ap.add_argument("--max_dd_stop_pct", type=float, default=8.5, help="Stop DD total sécurité en % (défaut: 8.5)")
     ap.add_argument("--state_path", type=str, default="research_v5/state_h73_ctrader.json")
