@@ -2,9 +2,9 @@
   "notified_trade_ids": [],
   "last_sl_by_coin": {},
   "active_pois": {
-    "AVAX": 7.0701,
+    "AVAX": 6.629149999999999,
     "INJ": 7.468,
-    "ETH": 1623.35,
+    "ETH": 1684.55,
     "BTC": 61742.5
   },
   "bot_sl": {
