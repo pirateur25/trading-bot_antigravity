@@ -1,5 +1,12 @@
 {
-  "active_positions": {},
+  "active_positions": {
+    "BTCUSDT": {
+      "entry_price": 59040.0,
+      "poi": 59053.0,
+      "side": "short",
+      "size": 0.06910569105691057
+    }
+  },
   "challenge_passed": false,
   "cloudfront_warned": false,
   "cur_utc_day": "2026-11-21",
@@ -12,7 +19,7 @@
     "2026-11-18": 3.4749181243517344,
     "2026-11-19": 1.5500182333709926,
     "2026-11-20": 2.2833852099510477,
-    "2026-11-21": 0.010076858841111971
+    "2026-11-21": 0.013797545182460454
   },
   "day_start_balance": 10314.192121119595,
   "days_traded": [
@@ -38,10 +45,10 @@
       "pending_poi": 7.1576
     },
     "BTCUSDT": {
-      "active_sl_price": 60044.84319166665,
-      "active_tp_price": 53154.451349999996,
+      "active_sl_price": 60024.0,
+      "active_tp_price": 53136.0,
       "peak_px": 0.0,
-      "pending_poi": 59001.5
+      "pending_poi": 59053.0
     },
     "ETHUSDT": {
       "active_sl_price": 0.0,
