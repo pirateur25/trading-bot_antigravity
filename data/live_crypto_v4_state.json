@@ -33,11 +33,6 @@
       "pos_id": "6b001bf6910b7b5654b2768b"
     }
   },
-  "known_positions": {
-    "BTC": {
-      "entry": 61797.58575,
-      "ts": 1795170693.1426032
-    }
-  },
+  "known_positions": {},
   "raw_dumped": {}
 }
