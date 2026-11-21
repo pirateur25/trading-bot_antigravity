@@ -1,0 +1,109 @@
+name: Live H7.3 — Bot cTrader Open API (Daily + Garde-Fou 5m)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Mode d'exécution (daily = rééquilibrage 1x/j | guard = garde-fou équité -3.8%)"
+        type: choice
+        default: "daily"
+        options: ["daily", "guard"]
+      env:
+        description: "Environnement cTrader (demo = Démo gratuit / Challenge démo | live = Serveur Live)"
+        type: choice
+        default: "demo"
+        options: ["demo", "live"]
+      dry_run:
+        description: "Mode simulation sans envoyer d'ordres réels"
+        type: boolean
+        default: true
+      initial_capital:
+        description: "Capital initial du compte (USD)"
+        default: "10000"
+      risk_mult:
+        description: "Multiplicateur de risque (1.0 = standard | 1.25 = rapide The5ers)"
+        type: choice
+        default: "1.0"
+        options: ["1.0", "1.25"]
+  repository_dispatch:
+    types: [cron_h73_ctrader_daily, cron_h73_ctrader_guard]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-h73-ctrader
+  cancel-in-progress: false
+
+jobs:
+  run_h73_ctrader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip (accélère les runs 5m)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-h73-ctrader-v1
+
+      - name: Installation des dépendances cTrader Open API
+        run: pip install --quiet ctrader-open-api pandas numpy
+
+      - name: Exécution du bot H7.3 cTrader
+        env:
+          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+          CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
+          CTRADER_ENV: ${{ vars.CTRADER_ENV || 'demo' }}
+          CTRADER_RISK_MULT: ${{ vars.CTRADER_RISK_MULT || '1.0' }}
+          CTRADER_INITIAL_CAPITAL: ${{ vars.CTRADER_INITIAL_CAPITAL || '10000' }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            if [ "${{ github.event.action }}" = "cron_h73_ctrader_guard" ]; then
+              MODE="guard"
+            else
+              MODE="daily"
+            fi
+            ENV_ARG="$CTRADER_ENV"
+            RMULT="$CTRADER_RISK_MULT"
+            CAP="$CTRADER_INITIAL_CAPITAL"
+            DRY_FLAG=""
+          else
+            MODE="${{ inputs.mode }}"
+            ENV_ARG="${{ inputs.env }}"
+            RMULT="${{ inputs.risk_mult }}"
+            CAP="${{ inputs.initial_capital }}"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then DRY_FLAG="--dry_run"; else DRY_FLAG=""; fi
+          fi
+
+          python research_v5/live_h73_ctrader.py \
+            --mode "$MODE" \
+            --env "$ENV_ARG" \
+            --initial_capital "$CAP" \
+            --risk_mult "$RMULT" \
+            --state_path research_v5/state_h73_ctrader.json \
+            $DRY_FLAG
+
+      - name: Sauvegarde de l'état uniquement si modifié (évite le spam de commits en mode 5m)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add research_v5/state_h73_ctrader.json || true
+          if ! git diff --cached --quiet; then
+            git pull --rebase --autostash origin main || true
+            git commit -m "chore(h73-ctrader): maj etat $(date -u +'%Y-%m-%d %H:%M UTC')" || true
+            git push origin HEAD:main || true
+          else
+            echo "Aucun changement d'état."
+          fi
+
