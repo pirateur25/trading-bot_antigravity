@@ -33,11 +33,6 @@
       "pos_id": "6b0215aab5f281e00e8474ab"
     }
   },
-  "known_positions": {
-    "AVAX": {
-      "entry": 6.622728,
-      "ts": 1795287690.832676
-    }
-  },
+  "known_positions": {},
   "raw_dumped": {}
 }
