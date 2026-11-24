@@ -11,12 +11,6 @@
       "poi": 61344.5,
       "side": "short",
       "size": 0.0365
-    },
-    "ETHUSDT": {
-      "entry_price": 1694.55,
-      "poi": 1696.25,
-      "side": "long",
-      "size": 1.324
     }
   },
   "challenge_passed": false,
@@ -34,7 +28,7 @@
     "2026-11-21": 1.5928193880771688,
     "2026-11-22": -0.772644511669896,
     "2026-11-23": 3.3006703760475826,
-    "2026-11-24": 0.6275182026740731
+    "2026-11-24": 0.600375355644901
   },
   "day_start_balance": 10732.586019602248,
   "days_traded": [
@@ -54,7 +48,7 @@
   "dry_run_positions": {},
   "hwm_balance": 10939.01298230849,
   "initial_balance": 10000.0,
-  "last_wallet_balance": 10477.867117231282,
+  "last_wallet_balance": 10512.920912255284,
   "symbols": {
     "AVAXUSDT": {
       "active_sl_price": 6.714,
@@ -65,13 +59,13 @@
     "BTCUSDT": {
       "active_sl_price": 61405.8,
       "active_tp_price": 55265.22,
-      "peak_px": 59547.903130433166,
+      "peak_px": 59412.3087463755,
       "pending_poi": 61344.5
     },
     "ETHUSDT": {
-      "active_sl_price": 1666.3111875,
-      "active_tp_price": 1864.0091250000003,
-      "peak_px": 1703.0591589133335,
+      "active_sl_price": 0.0,
+      "active_tp_price": 0.0,
+      "peak_px": 0.0,
       "pending_poi": 1696.25
     },
     "INJUSDT": {
