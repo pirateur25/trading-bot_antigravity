@@ -35,7 +35,7 @@
     "2026-11-22": -0.772644511669896,
     "2026-11-23": 3.3006703760475826,
     "2026-11-24": 0.10403666303933279,
-    "2026-11-25": 1.9283724107291165
+    "2026-11-25": 2.1235577238728367
   },
   "day_start_balance": 10761.52546089306,
   "days_traded": [
@@ -54,26 +54,26 @@
   "dry_run_balance": 10000.0,
   "dry_run_orders": {},
   "dry_run_positions": {},
-  "hwm_balance": 10954.362701965973,
+  "hwm_balance": 10973.881233280345,
   "initial_balance": 10000.0,
   "last_wallet_balance": 10437.201704213603,
   "symbols": {
     "AVAXUSDT": {
       "active_sl_price": 6.479010000000001,
       "active_tp_price": 6.0426,
-      "peak_px": 6.34082871675,
+      "peak_px": 6.313902606083333,
       "pending_poi": 6.7073
     },
     "BTCUSDT": {
       "active_sl_price": 59256.597,
       "active_tp_price": 55265.22,
-      "peak_px": 58162.028811594835,
+      "peak_px": 58027.6855688395,
       "pending_poi": 61344.5
     },
     "ETHUSDT": {
       "active_sl_price": 1678.83,
       "active_tp_price": 1510.947,
-      "peak_px": 1634.093937983,
+      "peak_px": 1628.4682596915,
       "pending_poi": 1677.15
     },
     "INJUSDT": {
