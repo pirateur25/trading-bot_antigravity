@@ -1,5 +1,12 @@
 {
-  "active_positions": {},
+  "active_positions": {
+    "ETHUSDT": {
+      "entry_price": 1668.7,
+      "poi": 1669.15,
+      "side": "short",
+      "size": 1.3447593935398816
+    }
+  },
   "challenge_passed": false,
   "cloudfront_warned": false,
   "cur_utc_day": "2026-11-27",
@@ -18,7 +25,7 @@
     "2026-11-24": 0.10403666303933279,
     "2026-11-25": 0.3596038764548211,
     "2026-11-26": -0.3285387258240189,
-    "2026-11-27": -0.5909406577747722
+    "2026-11-27": -0.5864931817974683
   },
   "day_start_balance": 10766.16742813794,
   "days_traded": [
@@ -56,10 +63,10 @@
       "pending_poi": 60853.5
     },
     "ETHUSDT": {
-      "active_sl_price": 0.0,
-      "active_tp_price": 0.0,
+      "active_sl_price": 1696.5116666666665,
+      "active_tp_price": 1501.8300000000002,
       "peak_px": 0.0,
-      "pending_poi": 1700.25
+      "pending_poi": 1669.15
     },
     "INJUSDT": {
       "active_sl_price": 0.0,
