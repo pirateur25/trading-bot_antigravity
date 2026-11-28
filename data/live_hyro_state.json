@@ -26,7 +26,7 @@
     "2026-11-25": 0.3596038764548211,
     "2026-11-26": -0.3285387258240189,
     "2026-11-27": -0.4670500863399684,
-    "2026-11-28": -0.5901939810709519
+    "2026-11-28": -0.526745719696064
   },
   "day_start_balance": 10713.716404015984,
   "days_traded": [
@@ -53,16 +53,16 @@
   "last_wallet_balance": 10559.596374626517,
   "symbols": {
     "AVAXUSDT": {
-      "active_sl_price": 6.614534593333333,
-      "active_tp_price": 5.85548964,
+      "active_sl_price": 6.594537115833333,
+      "active_tp_price": 5.837786955,
       "peak_px": 0.0,
-      "pending_poi": 6.4996
+      "pending_poi": 6.4799500000000005
     },
     "BTCUSDT": {
-      "active_sl_price": 60381.69637499999,
-      "active_tp_price": 53452.649249999995,
+      "active_sl_price": 60276.87499166666,
+      "active_tp_price": 53359.85655,
       "peak_px": 0.0,
-      "pending_poi": 59332.5
+      "pending_poi": 59229.5
     },
     "ETHUSDT": {
       "active_sl_price": 1696.5116666666665,
